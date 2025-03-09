@@ -15,7 +15,7 @@ class WorkersDatabase:
     def create_database(self, table_name):
 
         """Belirtilen tabloyu oluşturur."""
-        conn = sqlite3.connect(f"{self.db_name}.db")
+        conn = sqlite3.connect(f"{self.db_name}")
         cursor = conn.cursor()
 
         cursor.execute(f"""
@@ -33,7 +33,7 @@ class WorkersDatabase:
 
     def create_seed_data(self, table_name):
         """Eğer tablo boşsa, örnek çalışan verilerini ekler."""
-        conn = sqlite3.connect(f"{self.db_name}.db")
+        conn = sqlite3.connect(f"{self.db_name}")
         cursor = conn.cursor()
 
         # Tablonun boş olup olmadığını kontrol et
@@ -43,7 +43,7 @@ class WorkersDatabase:
         if count == 0:  # Eğer satır sayısı 0 ise tablo boştur
             employees = [
                 ("Emre", "Ozkan", 23),
-                ("Kubilay", "Celik", 28),
+                ("Kubilay", "Celik", 25),
                 ("Zeynep", "Yilmaz", 35)
             ]
 
@@ -60,7 +60,7 @@ class WorkersDatabase:
         if table_name is None:
             table_name = self.default_table
 
-        conn = sqlite3.connect(f"{self.db_name}.db")
+        conn = sqlite3.connect(f"{self.db_name}")
         cursor = conn.cursor()
         
         cursor.execute(f"SELECT * FROM {table_name}")
@@ -74,23 +74,18 @@ class WorkersDatabase:
         print("-----------------\n")
 
     def find_employee(self, name):
-        conn = sqlite3.connect(f"{self.db_name}.db")
+        conn = sqlite3.connect(f"{self.db_name}")
         cursor = conn.cursor()
         
         cursor.execute(f"SELECT * FROM {self.default_table} WHERE name=?", (name,))
         employee = cursor.fetchone()
         
         conn.close()
-        
-        # if employee:
-        #     print(f"Çalışan: ID: {employee[0]}, Ad: {employee[1]}, Soyad: {employee[2]}, Yaş: {employee[3]}")
-        # else:
-        #     print("Çalışan bulunamadı.")
         return employee
 
     def add_employee(self, table_name, name, surname, age):
         """Belirtilen tabloya yeni bir çalışan ekler."""
-        conn = sqlite3.connect(f"{self.db_name}.db")
+        conn = sqlite3.connect(f"{self.db_name}")
         cursor = conn.cursor()
         
         cursor.execute(f"INSERT INTO {table_name} (name, surname, age) VALUES (?, ?, ?)", (name, surname, age))
@@ -100,7 +95,7 @@ class WorkersDatabase:
 
     def delete_employee(self, table_name, emp_id):
         """Belirtilen tabloda verilen ID'ye sahip çalışanı siler."""
-        conn = sqlite3.connect(f"{self.db_name}.db")
+        conn = sqlite3.connect(f"{self.db_name}")
         cursor = conn.cursor()
         
         cursor.execute(f"DELETE FROM {table_name} WHERE id=?", (emp_id,))
