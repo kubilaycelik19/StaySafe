@@ -16,9 +16,13 @@ Including another URLconf
 """
 from django.contrib import admin
 from django.urls import include, path
+from django.shortcuts import redirect
+
+def redirect_to_display(request):
+    return redirect('display/index')
 
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('display/', include('display.urls')),
-
+    path('', redirect_to_display, name='home'),  # Ana sayfa yönlendirmesi
 ]
