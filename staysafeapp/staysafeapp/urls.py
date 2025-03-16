@@ -25,4 +25,5 @@ urlpatterns = [
     path('admin/', admin.site.urls),
     path('display/', include('display.urls')),
     path('', redirect_to_display, name='home'),  # Ana sayfa yönlendirmesi
+    path('employees/', include('employees.urls')),
 ]

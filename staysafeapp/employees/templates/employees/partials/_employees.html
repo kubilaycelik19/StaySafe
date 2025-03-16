@@ -1,0 +1,30 @@
+{% load static %}
+
+<div class="card mb-3">
+    <div class="row">
+        <div class="col-4">
+            {% with 'employees/img/'|add:employee.name|add:'.jpg' as image_path %}
+                <img class="img-fluid rounded-start" src="{% static image_path %}" alt="{{employee.name}} {{employee.surname}}" onerror="this.src='{% static 'employees/img/default.jpg' %}'">
+            {% endwith %}
+        </div>
+        <div class="col-8">
+            <div class="card-body">
+                <h5 class="card-title">
+                    <a href="{% url 'employee_detail' employee.sicil_no %}">
+                        {{employee.name}} {{employee.surname}}
+                    </a>
+                </h5>
+                <p class="card-text">
+                    <strong>Sicil No:</strong> {{employee.sicil_no|upper}}
+                </p>
+                <p class="card-text">
+                    <strong>Ad Soyad:</strong> {{employee.name}} {{employee.surname}}
+                </p>
+
+                <p class="card-text">
+                    <strong>Yaş:</strong> {{employee.age}}
+                </p>
+            </div>
+        </div>
+    </div>
+</div>
