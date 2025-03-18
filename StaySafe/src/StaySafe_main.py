@@ -12,7 +12,7 @@ from imutils.video import FPS
 from ultralytics import YOLO
 from Database_Utils import WorkersDatabase
 from face_recognizer import FaceRecognitionSystem
-from settings.settings import FACE_DETECTION
+from settings.settings import FACE_DETECTION, CAMERA
 
 # Logging ayarları
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -53,7 +53,7 @@ except Exception as e:
 db = WorkersDatabase(db_name="Workers.db")
 
 class StaySafe():
-    def __init__(self, Model_Name: str, db_name, width = 1280, height = 1280):
+    def __init__(self, Model_Name: str, db_name, width = 640, height = 480):
         self.Model_Name = Model_Name
         self.width = width
         self.height = height
@@ -88,6 +88,11 @@ class StaySafe():
     
     def SafetyDetector(self, Source, recognition=False):
         cap = cv2.VideoCapture(Source)
+        
+        # Kamera ayarlarını yapılandır
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA['width'])
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA['height'])
+        
         fps = FPS().start()  # FPS sayacı başlat
         
         while cap.isOpened():
