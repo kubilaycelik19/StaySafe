@@ -16,6 +16,9 @@ camera_is_active = True
 def index(request):
     return render(request, 'display/index.html', {'camera_is_active': camera_is_active})
 
+def home(request):
+    return render(request, 'display/home.html')
+
 def video_feed(request):
     if not camera_is_active:
         return StreamingHttpResponse('')

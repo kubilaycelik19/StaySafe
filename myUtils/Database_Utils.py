@@ -77,11 +77,20 @@ class WorkersDatabase:
         conn = sqlite3.connect(f"{self.db_name}")
         cursor = conn.cursor()
         
-        cursor.execute(f"SELECT * FROM {self.default_table} WHERE name=?", (name,))
+        # Büyük/küçük harf duyarsız arama için LOWER fonksiyonunu kullan
+        cursor.execute(f"SELECT * FROM {self.default_table} WHERE LOWER(name)=LOWER(?)", (name,))
         employee = cursor.fetchone()
         
         conn.close()
-        return employee
+        
+        if employee:
+            # Sonucu sözlük formatında döndür
+            return {
+                'name': employee[1],      # name
+                'surname': employee[2],    # surname
+                'age': employee[3]        # age
+            }
+        return None
 
     def add_employee(self, table_name, name, surname, age):
         """Belirtilen tabloya yeni bir çalışan ekler."""
