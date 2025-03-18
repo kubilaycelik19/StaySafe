@@ -1,5 +1,6 @@
 # Dataset klasörü
 dataset/
+Face_recognition/images
 
 # Python
 __pycache__/
