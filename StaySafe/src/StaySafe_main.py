@@ -1,56 +1,86 @@
 import cv2
 import imutils
-import matplotlib.pyplot as plt
 import numpy as np
 import os
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import json
 import logging
+import queue
+import threading
+import time
 from imutils.video import FPS
 from ultralytics import YOLO
 from Database_Utils import WorkersDatabase
 from face_recognizer import FaceRecognitionSystem
-from settings.settings import FACE_DETECTION, CAMERA
+from concurrent.futures import ThreadPoolExecutor
 
 # Logging ayarları
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-def load_names(names_path):
-    """JSON dosyasından isimleri yükler"""
-    try:
-        with open(names_path, 'r') as f:
-            return json.load(f)
-    except Exception as e:
-        logger.error(f"İsimler yüklenirken hata oluştu: {e}")
-        return {}
-
 # Ana dizin
 CURRENT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# Yüz tanıma modeli yolu
-TRAINER_PATH = os.path.join(CURRENT_DIR, "trainer.yml")
-NAMES_PATH = os.path.join(CURRENT_DIR, "names.json")
-
-# Yolları kontrol et
-logger.info(f"Current directory: {CURRENT_DIR}")
-for path in [TRAINER_PATH, NAMES_PATH]:
-    if not os.path.exists(path):
-        logger.warning(f"UYARI: Dosya bulunamadı: {path}")
-    else:
-        logger.info(f"OK: Dosya bulundu: {path}")
-
-# Sınıf isimlerini yükle
-try:
-    names = load_names(NAMES_PATH)
-    logger.info(f"İsimler yüklendi: {names}")
-except Exception as e:
-    logger.error(f"İsimler yüklenirken hata oluştu: {e}")
-    names = {}
-
 db = WorkersDatabase(db_name="Workers.db")
+
+class FrameProcessor:
+    def __init__(self, frame_queue, result_queue, model, width=640):
+        self.frame_queue = frame_queue
+        self.result_queue = result_queue
+        self.model = model
+        self.width = width
+        self.running = False
+        self.thread = None
+        self.last_result = None
+        self.last_result_time = 0
+        self.result_cache_time = 0.1  # 100ms cache süresi
+
+    def start(self):
+        self.running = True
+        self.thread = threading.Thread(target=self._process_frames)
+        self.thread.daemon = True  # Ana program kapanınca thread de kapanır
+        self.thread.start()
+
+    def stop(self):
+        self.running = False
+        # Thread'i zorla sonlandır
+        self.thread = None
+        
+        # Kuyrukları temizle
+        while not self.frame_queue.empty():
+            try:
+                self.frame_queue.get_nowait()
+            except:
+                pass
+        while not self.result_queue.empty():
+            try:
+                self.result_queue.get_nowait()
+            except:
+                pass
+
+    def _process_frames(self):
+        while self.running:
+            try:
+                frame = self.frame_queue.get(timeout=1.0)
+                
+                # Frame'i yeniden boyutlandır
+                frame = imutils.resize(frame, width=self.width)
+                
+                # Son sonuç çok yeniyse, onu kullan
+                current_time = time.time()
+                if self.last_result and (current_time - self.last_result_time) < self.result_cache_time:
+                    self.result_queue.put((frame, self.last_result))
+                    continue
+                
+                # YOLO modelini çalıştır
+                results = self.model(frame, verbose=False)
+                self.last_result = results
+                self.last_result_time = current_time
+                
+                self.result_queue.put((frame, results))
+            except queue.Empty:
+                continue
+            except Exception as e:
+                logger.error(f"Frame işleme hatası: {e}")
 
 class StaySafe():
     def __init__(self, Model_Name: str, db_name, width = 640, height = 480):
@@ -62,13 +92,25 @@ class StaySafe():
         self.predicted_names = []
         self.database = db_name
         
-        # Yüz tanıma sistemi başlatma
-        self.face_recognition = FaceRecognitionSystem()
+        # Yüz tanıma sistemini başlat
+        self.face_recognizer = FaceRecognitionSystem()
         
         # CUDA optimizasyonları
         if torch.cuda.is_available():
             torch.backends.cudnn.benchmark = True
             torch.backends.cudnn.deterministic = False
+        
+        # Frame ve sonuç kuyrukları
+        self.frame_queue = queue.Queue(maxsize=4)  # Max 4 frame buffer
+        self.result_queue = queue.Queue(maxsize=4)
+        
+        # Frame işleyici
+        self.frame_processor = FrameProcessor(
+            self.frame_queue,
+            self.result_queue,
+            self.model,
+            self.width
+        )
     
     def CreateYoloModel(self): 
         model = YOLO(self.Model_Name)
@@ -86,105 +128,119 @@ class StaySafe():
             workers.append(worker)
         return workers
     
-    def SafetyDetector(self, Source, recognition=False):
-        cap = cv2.VideoCapture(Source)
+    def process_detection_results(self, frame, results):
+        """Tespit sonuçlarını işle ve görüntüye çiz"""
+        class_names = self.model.names
+        boxes = results[0].boxes
         
-        # Kamera ayarlarını yapılandır
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA['width'])
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA['height'])
+        # Tüm person'ları bul
+        persons = [box for box in boxes if class_names[int(box.cls)] == 'person']
         
-        fps = FPS().start()  # FPS sayacı başlat
-        
-        while cap.isOpened():
-            ret, frame = cap.read()
-            if not ret:
-                break
+        # Her bir person için helmet ve vest kontrolü yap
+        for person in persons:
+            x1, y1, x2, y2 = map(int, person.xyxy[0])
+            has_helmet = False
+            has_vest = False
+            
+            for other_box in boxes:
+                other_class_id = int(other_box.cls)
+                other_class_name = class_names[other_class_id]
+                other_x1, other_y1, other_x2, other_y2 = map(int, other_box.xyxy[0])
                 
-            frame = cv2.flip(frame, 1)
-            frame = imutils.resize(frame, width=self.width)
+                if (other_class_name == 'helmet' or other_class_name == 'vest') and \
+                (other_x1 > x1 and other_x2 < x2 and other_y1 > y1 and other_y2 < y2):
+                    if other_class_name == 'helmet':
+                        has_helmet = True
+                    elif other_class_name == 'vest':
+                        has_vest = True
             
-            # Model ile tahmin yap
-            results = self.model(frame, verbose=False)
-            
-            # Sınıf isimlerini al
-            class_names = self.model.names
-            boxes = results[0].boxes
-            
-            # Tüm person'ları bul
-            persons = [box for box in boxes if class_names[int(box.cls)] == 'person']
-            
-            # Her bir person için helmet ve vest kontrolü yap
-            for person in persons:
-                x1, y1, x2, y2 = map(int, person.xyxy[0])
-                has_helmet = False
-                has_vest = False
+            if has_helmet or has_vest:
+                # Güvenli durum - yeşil kutu
+                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                cv2.putText(frame, 'Safe', (x1, y1 - 10), 
+                          cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
+            else:
+                # Yüz bölgesini kes
+                face_roi = frame[y1:y2, x1:x2]
                 
-                for other_box in boxes:
-                    other_class_id = int(other_box.cls)
-                    other_class_name = class_names[other_class_id]
-                    other_x1, other_y1, other_x2, other_y2 = map(int, other_box.xyxy[0])
+                # Yüz tanıma işlemini yap
+                name, confidence = self.face_recognizer.recognize_faces(face_roi)
+                
+                # Kırmızı kutu ve bilgileri çiz
+                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
+                cv2.putText(frame, name, (x1, y1 - 10), 
+                          cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 2)
+                cv2.putText(frame, f"Confidence: {confidence:.1f}%", 
+                          (x1, y2 + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 2)
+                
+                self.predicted_names = [name]
+        
+        return frame
+    
+    def SafetyDetector(self, recognition=False):
+        # Kamera başlatma işlemini face_recognizer üzerinden yap
+        if self.face_recognizer.cam is None:
+            self.face_recognizer.initialize_camera()
+            if self.face_recognizer.cam is None:
+                logger.error("Kamera başlatılamadı")
+                return
+        
+        cap = self.face_recognizer.cam
+        fps = FPS().start()
+        
+        # Frame işleyiciyi başlat
+        self.frame_processor.start()
+        
+        try:
+            while cap.isOpened():
+                ret, frame = cap.read()
+                if not ret:
+                    break
                     
-                    if (other_class_name == 'helmet' or other_class_name == 'vest') and \
-                    (other_x1 > x1 and other_x2 < x2 and other_y1 > y1 and other_y2 < y2):
-                        if other_class_name == 'helmet':
-                            has_helmet = True
-                        elif other_class_name == 'vest':
-                            has_vest = True
+                frame = cv2.flip(frame, 1)
                 
-                if has_helmet or has_vest:
-                    # Güvenli durum - yeşil kutu
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                    cv2.putText(frame, 'Safe', (x1, y1 - 10), 
-                              cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
-                else:
+                # Frame'i kuyruğa ekle
+                try:
+                    self.frame_queue.put(frame, timeout=0.1)
+                except queue.Full:
+                    # Kuyruk doluysa en eski frame'i at
+                    try:
+                        self.frame_queue.get_nowait()
+                        self.frame_queue.put(frame)
+                    except:
+                        pass
+                
+                try:
+                    # İşlenmiş frame'i al
+                    processed_frame, results = self.result_queue.get(timeout=0.1)
+                    
+                    # Sonuçları işle ve görüntüye çiz
                     if recognition:
-                        # Yüz bölgesini kes
-                        face_roi = frame[y1:y2, x1:x2]
-                        
-                        # Gri tonlamaya çevir
-                        gray = cv2.cvtColor(face_roi, cv2.COLOR_BGR2GRAY)
-                        
-                        # Yüz tespiti yap
-                        faces = self.face_recognition.face_cascade.detectMultiScale(
-                            gray,
-                            scaleFactor=FACE_DETECTION['scale_factor'],
-                            minNeighbors=FACE_DETECTION['min_neighbors'],
-                            minSize=FACE_DETECTION['min_size']
-                        )
-                        
-                        for (fx, fy, fw, fh) in faces:
-                            # Yüz tanıma yap
-                            face_id, confidence = self.face_recognition.recognizer.predict(gray[fy:fy+fh, fx:fx+fw])
-                            name = self.face_recognition.names.get(str(face_id), "Unknown")
-                            confidence_text = f"{confidence:.1f}%"
-                            
-                            # Kırmızı kutu ve bilgileri çiz
-                            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
-                            cv2.putText(frame, name, (x1, y1 - 10), 
-                                      cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 2)
-                            cv2.putText(frame, confidence_text, (x1, y2 + 20), 
-                                      cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 2)
-                            
-                            self.predicted_names = [name]
-                    else:
-                        # Güvensiz durum - kırmızı kutu
-                        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
-                        cv2.putText(frame, 'Unsafe', (x1, y1 - 10), 
-                                  cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 2)
-            
-            # FPS'i güncelle ve göster
-            fps.update()
-            fps.stop()
-            cv2.putText(frame, f"FPS: {int(fps.fps())}", (10, 30), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-            
-            cv2.imshow('Result', frame)
-            
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
+                        processed_frame = self.process_detection_results(processed_frame, results)
+                    
+                    # FPS'i güncelle ve göster
+                    fps.update()
+                    fps.stop()
+                    cv2.putText(processed_frame, f"FPS: {int(fps.fps())}", (10, 30), 
+                              cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                    
+                    cv2.imshow('Result', processed_frame)
+                except queue.Empty:
+                    continue
+                
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord('q'):
+                    break
         
-        cap.release()
-        cv2.destroyAllWindows()
+        finally:
+            # Önce frame işleyiciyi durdur
+            self.frame_processor.stop()
+            
+            # Sonra kamerayı ve pencereleri kapat
+            if cap is not None:
+                cap.release()
+            cv2.destroyAllWindows()
+            cv2.waitKey(1)  # Pencereyi tamamen kapatmak için ekstra waitKey
 
 if __name__ == "__main__":
     # Model yolları
@@ -203,4 +259,4 @@ if __name__ == "__main__":
     )
     
     # Güvenlik kontrolünü başlat
-    stay_safe.SafetyDetector(Source=0, recognition=True)
+    stay_safe.SafetyDetector(recognition=True)

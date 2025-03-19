@@ -57,48 +57,23 @@ class FaceRecognitionSystem:
             logger.error(f"Error initializing camera: {e}")
             self.cam = None
     
-    def recognize_faces(self):
-        """Start face recognition loop"""
-        if self.cam is None:
-            raise ValueError("Failed to initialize camera")
-        if self.face_cascade.empty():
-            raise ValueError("Error loading cascade classifier")
+    def recognize_faces(self, img):
+        """Yüz tanıma işlemi"""
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        faces = self.face_cascade.detectMultiScale(
+            gray,
+            scaleFactor=FACE_DETECTION['scale_factor'],
+            minNeighbors=FACE_DETECTION['min_neighbors'],
+            minSize=FACE_DETECTION['min_size']
+        )
         
-        logger.info("Press 'CTRL + C' to exit.")
+        if len(faces) > 0:
+            x, y, w, h = faces[0]  # İlk yüzü al
+            id, confidence = self.recognizer.predict(gray[y:y+h, x:x+w])
+            name = self.names.get(str(id), "Unknown")
+            return name, confidence
         
-        while True:
-            ret, img = self.cam.read()
-            if not ret:
-                logger.warning("Failed to grab frame")
-                continue
-
-            img = cv2.flip(img, 1)
-            
-            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            faces = self.face_cascade.detectMultiScale(
-                gray,
-                scaleFactor=FACE_DETECTION['scale_factor'],
-                minNeighbors=FACE_DETECTION['min_neighbors'],
-                minSize=FACE_DETECTION['min_size']
-            )
-            
-            for (x, y, w, h) in faces:
-                cv2.rectangle(img, (x, y), (x+w, y+h), (0, 255, 0), 2)
-                id, confidence = self.recognizer.predict(gray[y:y+h, x:x+w])
-                name = self.names.get(str(id), "Unknown")
-                confidence_text = f"{confidence:.1f}%"
-                
-                cv2.putText(img, name, (x+5, y-5), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
-                cv2.putText(img, confidence_text, (x+5, y+h+20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
-                
-            cv2.imshow("Face Recognition", img)
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
-        
-        self.cam.release()
-        cv2.destroyAllWindows()
-        logger.info("Face recognition system stopped.")
-        return name
+        return "Unknown", 0
 
 if __name__ == "__main__":
     try:
