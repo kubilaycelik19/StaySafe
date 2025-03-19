@@ -1,8 +1,8 @@
 from django.http import StreamingHttpResponse, JsonResponse
 from django.shortcuts import render
-from static.staysafe_main import StaySafe
+from static.ss_main import StaySafe
 
-stay_safe = StaySafe(Model_Name="../staysafeapp/static/Yolo11n_50_epoch.pt", face_model_path="../staysafeapp/static/emre_kubilay_100_epoch_resnet.pth", db_name="staysafeapp/static/Workers.db")
+stay_safe = StaySafe(Model_Name="../staysafeapp/static/Yolo11n_50_epoch.pt", db_name="staysafeapp/static/Workers.db")
 
 label_to_name = {
     0: "Emre",  # 0 etiketinin ismi
@@ -22,7 +22,7 @@ def home(request):
 def video_feed(request):
     if not camera_is_active:
         return StreamingHttpResponse('')
-    return StreamingHttpResponse(stay_safe.SafetyDetector(Source=0, recognition=True), content_type="multipart/x-mixed-replace; boundary=frame")
+    return StreamingHttpResponse(stay_safe.SafetyDetector(recognition=True), content_type="multipart/x-mixed-replace; boundary=frame")
 
 def toggle_camera(request):
     global camera_is_active
