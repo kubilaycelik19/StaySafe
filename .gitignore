@@ -1,7 +1,6 @@
 # Dataset klasörü
 dataset/
-Face_recognition/images
-
+StaySafe\images
 # Python
 __pycache__/
 *.py[cod]
