@@ -105,6 +105,8 @@ class StaySafe():
             self.model,
             self.width
         )
+        
+        self.camera_active = False
     
     def CreateYoloModel(self): 
         model = YOLO(self.Model_Name)
@@ -172,8 +174,33 @@ class StaySafe():
         
         return frame
     
+    def toggle_camera(self):
+        """Kamerayı açıp kapatmak için metod"""
+        try:
+            if self.camera_active:
+                # Kamerayı kapat
+                if self.face_recognizer.cam is not None:
+                    self.face_recognizer.release_camera()
+                self.camera_active = False
+                logger.info("Kamera kapatıldı")
+                return False
+            else:
+                # Kamerayı aç
+                self.face_recognizer.initialize_camera()
+                if self.face_recognizer.cam is None:
+                    raise Exception("Kamera başlatılamadı")
+                self.camera_active = True
+                logger.info("Kamera açıldı")
+                return True
+        except Exception as e:
+            logger.error(f"Kamera kontrolü sırasında hata: {e}")
+            raise Exception(f"Kamera kontrolü başarısız: {str(e)}")
+
     def SafetyDetector(self, recognition=False):
         """Django için video akışı sağlayan metod"""
+        if not self.camera_active:
+            return
+            
         if self.face_recognizer.cam is None:
             self.face_recognizer.initialize_camera()
             if self.face_recognizer.cam is None:

@@ -4,6 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="csrf-token" content="{{ csrf_token }}">
     <link rel="stylesheet" href={% static 'css/bootstrap.min.css' %}/>
     {% block css_files %}
         <!--Diger sayfalarda 'css_files' ismiyla kurulan blockların arası render edilecek -->
@@ -12,6 +13,10 @@
 </head>
 <body>
     
+    <div style="display:none;">
+        {% csrf_token %}
+    </div>
+
     <!--navbar-->
    {% include 'partials/_nav.html' %}
 

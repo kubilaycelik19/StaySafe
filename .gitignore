@@ -1,6 +1,6 @@
 # Dataset klasörü
 dataset/
-StaySafe\images
+StaySafe/images/
 # Python
 __pycache__/
 *.py[cod]

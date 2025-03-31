@@ -10,6 +10,7 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/5.1/ref/settings/
 """
 
+import os
 from pathlib import Path
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -26,6 +27,7 @@ SECRET_KEY = 'django-insecure-n4q(gj0ej0kq75n08uypt2hvhj$zt_=#y2kn+8*$nkfiqow&ju
 DEBUG = True
 
 ALLOWED_HOSTS = []
+
 
 
 # Application definition
@@ -50,6 +52,13 @@ MIDDLEWARE = [
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
+
+INSTALLED_APPS += ['corsheaders']
+
+MIDDLEWARE += ['corsheaders.middleware.CorsMiddleware']
+
+CORS_ALLOW_ALL_ORIGINS = True  # Güvenlik için geliştirme sonrası bunu kapatın
+
 
 ROOT_URLCONF = 'staysafeapp.urls'
 
@@ -119,10 +128,13 @@ USE_TZ = True
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/5.1/howto/static-files/
 
-STATIC_URL = 'static/'
-STATICFILES_DIRS = [
-    BASE_DIR / 'static',
-]
+STATIC_URL = '/static/'
+STATICFILES_DIRS = [os.path.join(BASE_DIR, 'static')]
+STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
+
+# Oturum ayarları
+SESSION_ENGINE = 'django.contrib.sessions.backends.db'  # Varsayılan
+SESSION_COOKIE_SECURE = False  # HTTPS kullanmıyorsanız False
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.1/ref/settings/#default-auto-field

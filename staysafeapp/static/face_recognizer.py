@@ -58,9 +58,19 @@ class FaceRecognitionSystem:
             logger.error(f"Error loading names: {e}")
             self.names = {}
     
+    def release_camera(self):
+        """Kamerayı serbest bırak"""
+        if self.cam is not None:
+            self.cam.release()
+            self.cam = None
+            logger.info("Kamera serbest bırakıldı")
+    
     def initialize_camera(self):
         """Initialize the camera with error handling"""
         try:
+            if self.cam is not None:
+                self.release_camera()
+                
             self.cam = cv2.VideoCapture(CAMERA['index'])
             if not self.cam.isOpened():
                 logger.error("Could not open webcam")
