@@ -1,0 +1,85 @@
+{% extends "layout.html" %}
+{% load static %}
+
+{% block page_title %}Rapor Detayı{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <div class="row">
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-header bg-warning">
+                    <h5 class="card-title mb-0">
+                        <i class="fas fa-user me-2"></i>
+                        Çalışan Bilgileri
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <p><strong>Ad Soyad:</strong> {{ report.employee.name }} {{ report.employee.surname }}</p>
+                    <p><strong>Sicil No:</strong> {{ report.employee.sicil_no }}</p>
+                    <p><strong>Yaş:</strong> {{ report.employee.age }}</p>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-header bg-warning">
+                    <h5 class="card-title mb-0">
+                        <i class="fas fa-info-circle me-2"></i>
+                        Rapor Detayları
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <p><strong>Tarih/Saat:</strong> {{ report.timestamp|date:"d.m.Y H:i" }}</p>
+                    <p><strong>Konum:</strong> {{ report.location|default:"Belirtilmemiş" }}</p>
+                    <p><strong>Ekipman Durumu:</strong>
+                        {% if report.is_equipped %}
+                            <span class="badge bg-success">Ekipmanlı</span>
+                        {% else %}
+                            <span class="badge bg-danger">Ekipmansız</span>
+                        {% endif %}
+                    </p>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="row mt-4">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header bg-warning">
+                    <h5 class="card-title mb-0">
+                        <i class="fas fa-camera me-2"></i>
+                        Görüntü
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <img src="{{ report.image.url }}" class="img-fluid" alt="Güvenlik Görüntüsü">
+                </div>
+            </div>
+        </div>
+    </div>
+    {% if report.notes %}
+    <div class="row mt-4">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header bg-warning">
+                    <h5 class="card-title mb-0">
+                        <i class="fas fa-sticky-note me-2"></i>
+                        Notlar
+                    </h5>
+                </div>
+                <div class="card-body">
+                    {{ report.notes|linebreaks }}
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+    <div class="mt-3">
+        <a href="{% url 'report_list' %}" class="btn btn-secondary">
+            <i class="fas fa-arrow-left me-2"></i>
+            Listeye Dön
+        </a>
+    </div>
+</div>
+{% endblock %} 

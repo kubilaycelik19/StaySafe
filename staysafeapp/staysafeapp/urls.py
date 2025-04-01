@@ -17,6 +17,8 @@ Including another URLconf
 from django.contrib import admin
 from django.urls import include, path
 from django.shortcuts import redirect
+from django.conf import settings
+from django.conf.urls.static import static
 
 def redirect_to_home(request):
     return redirect('display/')
@@ -26,4 +28,5 @@ urlpatterns = [
     path('', redirect_to_home, name='home'),  # Ana sayfa yönlendirmesi
     path('display/', include('display.urls')),
     path('employees/', include('employees.urls')),
-]
+    path('reports/', include('reports.urls')),
+] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
