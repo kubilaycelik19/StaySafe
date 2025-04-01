@@ -8,7 +8,7 @@ import queue
 import threading
 import time
 import json
-import sqlite3
+# import sqlite3 # Kaldırıldı
 import warnings
 # from imutils.video import FPS # FPS kullanılmıyor gibi, kaldırılabilir
 from ultralytics import YOLO
@@ -58,7 +58,7 @@ FACE_DETECTION = {
 
 # Dosya yolları (STATIC_DIR kullanarak)
 MODEL_PATH = os.path.join(STATIC_DIR, "Yolo11n_50_epoch.pt")
-DB_PATH = os.path.join(STATIC_DIR, "Workers.db")
+# DB_PATH = os.path.join(STATIC_DIR, "Workers.db") # Kaldırıldı
 NAMES_FILE = os.path.join(STATIC_DIR, 'names.json')
 TRAINER_FILE = os.path.join(STATIC_DIR, 'trainer.yml')
 # Haarcascade dosyasını OpenCV'nin kurulu olduğu yerden alındı
@@ -76,85 +76,6 @@ except AttributeError:
 
 REPORT_DELAY = 5 # Raporlama öncesi bekleme süresi (saniye)
 
-# --- Veritabanı Sınıfı --- Düzenlenecek!!!
-class WorkersDatabase:
-    def __init__(self, db_name, default_table="employees"):
-        self.db_name = db_name
-        self.default_table = default_table
-        # Veritabanı ve tablo yoksa oluştur
-        if not os.path.exists(self.db_name):
-            logger.warning(f"Veritabanı bulunamadı: {self.db_name}. Yeni veritabanı oluşturuluyor.")
-            self.create_database(self.default_table)
-            self.create_seed_data(self.default_table)
-        else:
-            # Veritabanı varsa tabloyu kontrol et
-             conn = sqlite3.connect(self.db_name)
-             cursor = conn.cursor()
-             try:
-                 cursor.execute(f"SELECT 1 FROM {self.default_table} LIMIT 1")
-             except sqlite3.OperationalError:
-                 logger.warning(f"'{self.default_table}' tablosu bulunamadı. Oluşturuluyor.")
-                 self.create_database(self.default_table)
-                 self.create_seed_data(self.default_table)
-             finally:
-                conn.close()
-
-
-    def create_database(self, table_name):
-        """Belirtilen tabloyu oluşturur."""
-        try:
-            conn = sqlite3.connect(self.db_name)
-            cursor = conn.cursor()
-            cursor.execute(f"""
-            CREATE TABLE IF NOT EXISTS {table_name} (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                surname TEXT NOT NULL,
-                age INTEGER NOT NULL
-            );
-            """)
-            conn.commit()
-            conn.close()
-            logger.info(f"Veritabanı '{self.db_name}' ve tablo '{table_name}' başarıyla oluşturuldu/kontrol edildi.")
-        except sqlite3.Error as e:
-            logger.error(f"Veritabanı/tablo oluşturma hatası ({table_name}): {e}")
-
-    def create_seed_data(self, table_name):
-        """Eğer tablo boşsa, örnek çalışan verilerini ekler."""
-        try:
-            conn = sqlite3.connect(self.db_name)
-            cursor = conn.cursor()
-            cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
-            count = cursor.fetchone()[0]
-            if count == 0:
-                employees = [
-                    ("Emre", "Ozkan", 23),
-                    ("Kubilay", "Celik", 25),
-                    ("Zeynep", "Yilmaz", 35)
-                ]
-                cursor.executemany(f"INSERT INTO {table_name} (name, surname, age) VALUES (?, ?, ?)", employees)
-                conn.commit()
-                logger.info(f"Örnek veriler '{table_name}' tablosuna eklendi.")
-            else:
-                logger.info(f"'{table_name}' tablosu zaten veri içeriyor, örnek veri eklenmedi.")
-            conn.close()
-        except sqlite3.Error as e:
-             logger.error(f"Örnek veri ekleme hatası ({table_name}): {e}")
-
-
-    def find_employee(self, name):
-        """Verilen isme göre çalışanı bulur."""
-        employee = None
-        try:
-            conn = sqlite3.connect(self.db_name)
-            cursor = conn.cursor()
-            # İsme göre tam eşleşme arayalım (büyük/küçük harf duyarsız olabilir, COLLATE NOCASE eklenebilir)
-            cursor.execute(f"SELECT * FROM {self.default_table} WHERE name=? COLLATE NOCASE", (name,))
-            employee = cursor.fetchone()
-            conn.close()
-        except sqlite3.Error as e:
-            logger.error(f"Veritabanı hatası (find_employee '{name}'): {e}")
-        return employee
 
 # --- Yüz Tanıma Sınıfı ---
 class FaceRecognitionSystem:
@@ -417,11 +338,11 @@ class FrameProcessor:
 
 # --- Ana Uygulama Sınıfı ---
 class StaySafeApp:
-    def __init__(self, model_path: str, db_path: str, width=640, height=480):
+    def __init__(self, model_path: str, width=640, height=480):
         self.model_path = model_path
-        self.db_path = db_path
+        # self.db_path = db_path # Kaldırıldı
         self.width = width # YOLO'nun işleyeceği genişlik
-        self.height = height # Kamera yüksekliği
+        self.height = height # Kamera yüksekliği (bilgi amaçlı)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         logger.info(f"Kullanılan cihaz: {self.device}")
 
@@ -430,7 +351,7 @@ class StaySafeApp:
             raise FileNotFoundError(f"Gerekli YOLO modeli bulunamadı: {self.model_path}")
         self.model = self.create_yolo_model()
 
-        self.database = WorkersDatabase(db_name=self.db_path)
+        # self.database = WorkersDatabase(db_name=self.db_path) # Kaldırıldı
         self.face_recognizer = FaceRecognitionSystem()
 
         if self.device.type == 'cuda':
@@ -469,7 +390,7 @@ class StaySafeApp:
             raise
 
     def findWorker(self, name):
-        """Verilen isimdeki çalışanı veritabanında arar ve cache kullanır."""
+        """Verilen isimdeki çalışanı Django veritabanında (Employee modeli) arar ve cache kullanır."""
         if not name or name in ["Unknown", "Error"]:
             return "Tanımsız veya hatalı çalışan adı."
 
@@ -477,19 +398,27 @@ class StaySafeApp:
         if name in self.worker_info_cache:
             return self.worker_info_cache[name]
 
+        # Employee modeli mevcut mu kontrol et (başlangıçta import edilmiş olmalı)
+        if Employee is None:
+            info = "Çalışan modeli (Employee) yüklenemediği için arama yapılamıyor."
+            self.worker_info_cache[name] = info
+            return info
+
         try:
-            worker = self.database.find_employee(name=name)
+            # Django ORM kullanarak çalışanı bul (isme göre, büyük/küçük harf duyarsız)
+            worker = Employee.objects.filter(name__iexact=name).first()
             if worker:
-                # worker bir tuple (id, name, surname, age)
-                info = f"Çalışan: {worker[1]} {worker[2]} (ID: {worker[0]}, Yaş: {worker[3]})"
+                # worker bir Employee nesnesi
+                # surname ve age alanlarının Employee modelinde olduğunu varsayıyoruz
+                info = f"Çalışan: {worker.name} {getattr(worker, 'surname', '')} (ID: {worker.id}, Yaş: {getattr(worker, 'age', 'N/A')})"
                 self.worker_info_cache[name] = info # Cache'e ekle
                 return info
             else:
-                 info = f"'{name}' isimli çalışan bulunamadı."
+                 info = f"'{name}' isimli çalışan Django veritabanında bulunamadı."
                  self.worker_info_cache[name] = info # Bulunamadı bilgisini de cache'le
                  return info
         except Exception as e:
-            logger.error(f"Çalışan arama hatası ({name}): {e}")
+            logger.error(f"Çalışan arama hatası (Django DB - {name}): {e}")
             return f"'{name}' aranırken veritabanı hatası."
 
     def create_safety_report(self, person_id, recognized_name, frame_to_save, missing_equipment_list):
@@ -681,9 +610,9 @@ class StaySafeApp:
                         # Sürekli güvensiz kalanlar için status'a uyarı ekleyebiliriz
                         if tracker_entry['reported'] and not can_report_again:
                              remaining_cooldown = int(report_cooldown - (current_time - tracker_entry['last_report_time']))
-                             person_status_text += f" (Raporlandı - {remaining_cooldown}s)"
+                             person_status_text += f" (Raporlandi - {remaining_cooldown}s)"
                         elif tracker_entry['reported']:
-                             person_status_text += " (Raporlandı)" # Soğuma bitti ama hala güvensizse
+                             person_status_text += " (Raporlandi)" # Soğuma bitti ama hala güvensizse
                         elif time_elapsed > 1:
                             person_status_text += f" ({int(time_elapsed)}s)" # Kaç sn güvensiz
 
@@ -853,7 +782,8 @@ class StaySafeApp:
 stay_safe_app = None
 try:
     logger.info("StaySafeApp uygulaması başlatılıyor...")
-    stay_safe_app = StaySafeApp(model_path=MODEL_PATH, db_path=DB_PATH)
+    # stay_safe_app = StaySafeApp(model_path=MODEL_PATH, db_path=DB_PATH) # db_path kaldırıldı
+    stay_safe_app = StaySafeApp(model_path=MODEL_PATH)
     logger.info("StaySafeApp uygulaması başarıyla başlatıldı.")
     # Başlangıçta kamerayı otomatik açmak için:
     # try:
