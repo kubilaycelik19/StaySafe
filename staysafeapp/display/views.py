@@ -15,16 +15,27 @@ from ultralytics import YOLO
 from django.http import StreamingHttpResponse, JsonResponse
 from django.shortcuts import render
 from django.views.decorators.csrf import csrf_exempt
+from django.core.files.base import ContentFile # Rapor görüntüsü kaydetmek için
+from django.core.files.storage import default_storage # Dosya işlemleri için
+from reports.models import EmployeeReport # Rapor modelini import et
 
-warnings.filterwarnings('ignore', category=UserWarning)
 
 # Logging ayarları
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+
+try:
+    from employees.models import Employee
+except ImportError:
+    logger.warning("employees uygulaması veya Employee modeli bulunamadı. Raporlar isimsiz kaydedilebilir.")
+    Employee = None
+
+warnings.filterwarnings('ignore', category=UserWarning)
+
 # --- Ayarlar ve Sabitler ---
-# Projenin ana dizinini (manage.py'nin olduğu yer) bulmaya çalışalım
-# Bu yapıya göre BASE_DIR, 'staysafeapp' klasörünü işaret etmeli
+# Projenin ana dizinini (manage.py'nin olduğu yer)
+# Bu yapıya göre BASE_DIR, 'staysafeapp' klasörü
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STATIC_DIR = os.path.join(BASE_DIR, 'static')
 logger.info(f"Proje Ana Dizini (BASE_DIR): {BASE_DIR}")
@@ -50,21 +61,22 @@ MODEL_PATH = os.path.join(STATIC_DIR, "Yolo11n_50_epoch.pt")
 DB_PATH = os.path.join(STATIC_DIR, "Workers.db")
 NAMES_FILE = os.path.join(STATIC_DIR, 'names.json')
 TRAINER_FILE = os.path.join(STATIC_DIR, 'trainer.yml')
-# Haarcascade dosyasını OpenCV'nin kurulu olduğu yerden alalım (daha güvenilir)
+# Haarcascade dosyasını OpenCV'nin kurulu olduğu yerden alındı
 try:
     CASCADE_PATH = os.path.join(cv2.data.haarcascades, 'haarcascade_frontalface_default.xml')
     if not os.path.exists(CASCADE_PATH):
         logger.error(f"Haarcascade dosyası bulunamadı: {CASCADE_PATH}")
         # Alternatif bir yol veya hata verme stratejisi eklenebilir
-        CASCADE_PATH = os.path.join(STATIC_DIR, 'haarcascade_frontalface_default.xml') # Statik klasörde de arayalım
+        CASCADE_PATH = os.path.join(STATIC_DIR, 'haarcascade_frontalface_default.xml') # Statik klasörde de arandı
         logger.warning(f"Statik klasördeki cascade kullanılacak: {CASCADE_PATH}")
 
 except AttributeError:
     logger.warning("cv2.data.haarcascades bulunamadı. Cascade yolu manuel olarak ayarlanmalı veya static klasörüne konulmalı.")
     CASCADE_PATH = os.path.join(STATIC_DIR, 'haarcascade_frontalface_default.xml') # Statik klasördeki cascade kullanılacak
 
+REPORT_DELAY = 5 # Raporlama öncesi bekleme süresi (saniye)
 
-# --- Veritabanı Sınıfı ---
+# --- Veritabanı Sınıfı --- Düzenlenecek!!!
 class WorkersDatabase:
     def __init__(self, db_name, default_table="employees"):
         self.db_name = db_name
@@ -156,7 +168,7 @@ class FaceRecognitionSystem:
 
         self.names = {}
         self.cam = None
-        self.model_loaded = False # Modelin yüklenip yüklenmediğini takip et
+        self.model_loaded = False # Modelin laod kontrolü
         try:
             self.load_model()
         except Exception as e:
@@ -225,7 +237,7 @@ class FaceRecognitionSystem:
 
             self.cam.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA['width'])
             self.cam.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA['height'])
-            # Kamera ayarlarının gerçekten uygulanıp uygulanmadığını kontrol edelim (bazı kameralar desteklemez)
+            # Kamera ayarlarının gerçekten uygulanıp uygulanmadığını kontrol etme işlemi. Extra kameralar destekliyor mu kontrol edilecek.
             actual_width = self.cam.get(cv2.CAP_PROP_FRAME_WIDTH)
             actual_height = self.cam.get(cv2.CAP_PROP_FRAME_HEIGHT)
             logger.info(f"Kamera başarıyla başlatıldı. İstenen: {CAMERA['width']}x{CAMERA['height']}, Alınan: {int(actual_width)}x{int(actual_height)}")
@@ -270,7 +282,7 @@ class FaceRecognitionSystem:
             )
 
             if len(faces) > 0:
-                # En büyük yüzü alalım (genellikle en belirgin olanıdır)
+                # En büyük yüzü secme islemi (genellikle en belirgin olanı)
                 faces = sorted(faces, key=lambda f: f[2]*f[3], reverse=True)
                 x, y, w, h = faces[0]
 
@@ -286,8 +298,8 @@ class FaceRecognitionSystem:
                     id_recognized, confidence = self.recognizer.predict(face_roi_gray)
 
                     # Confidence: Düşük değer daha iyi eşleşme (0 mükemmel eşleşme)
-                    # Bunu 0-100 arası bir güven skoruna çevirelim (yaklaşık)
-                    # Bu eşik değeri (örn. 70-80) modele göre ayarlanmalı
+                    # 0-100 arası bir güven skoruna çevir
+                    # Eşik değeri (örn. 70-80) threshold 
                     if confidence < 80: # Eşik değeri - daha düşükse daha güvenli
                         name = self.names.get(str(id_recognized), "Unknown")
                         confidence_score = round((1 - (confidence / 100)) * 100) # Basit bir dönüşüm
@@ -344,7 +356,7 @@ class FrameProcessor:
         if self.running:
             self.running = False
             if self.thread is not None:
-                # Kuyrukları temizlemeden önce thread'in bitmesini bekleyelim
+                # Kuyrukları temizlemeden önce thread'in bitmesi bekleniyor
                 self.thread.join(timeout=1.0) # 1 saniye bekle
                 if self.thread.is_alive():
                     logger.warning("FrameProcessor thread'i join ile durmadı.")
@@ -383,7 +395,7 @@ class FrameProcessor:
                 except queue.Full:
                     logger.warning("Sonuç kuyruğu (result_queue) dolu. Bir sonuç atlanıyor.")
                     # Eski sonucu atıp yenisini ekleyebiliriz ama senkronizasyon bozulabilir
-                    # Şimdilik sadece uyarı verelim
+                    # Şimdilik sadece uyarı verilecek
                     pass
 
             except queue.Empty:
@@ -393,7 +405,7 @@ class FrameProcessor:
             except Exception as e:
                 # Hata durumunda logla ve devam etmeye çalış
                 logger.error(f"Frame işleme hatası (_process_frames): {e}", exc_info=True) # Hata detayını logla
-                # Hata durumunda result_queue'ya None gönderebiliriz
+                # Hata durumunda result_queue'ya None gönderilebilir.
                 try:
                      # Orijinal frame'i None result ile gönderelim ki akış devam etsin
                     self.result_queue.put((original_frame, None), timeout=0.1)
@@ -409,7 +421,7 @@ class StaySafeApp:
         self.model_path = model_path
         self.db_path = db_path
         self.width = width # YOLO'nun işleyeceği genişlik
-        self.height = height # Kamera yüksekliği (bilgi amaçlı)
+        self.height = height # Kamera yüksekliği
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         logger.info(f"Kullanılan cihaz: {self.device}")
 
@@ -425,7 +437,7 @@ class StaySafeApp:
             torch.backends.cudnn.benchmark = True
             # torch.backends.cudnn.deterministic = False # Genellikle False daha hızlıdır
 
-        # Kuyruk boyutlarını artıralım mı? Makine hızına bağlı.
+        # Kuyruk boyutlarını artırılabilir. Makine hızına bağlı. Test edilecek.
         self.frame_queue = queue.Queue(maxsize=5)
         self.result_queue = queue.Queue(maxsize=5)
 
@@ -437,8 +449,10 @@ class StaySafeApp:
         )
 
         self.camera_active = False # Başlangıçta kamera kapalı
-        self.predicted_names = [] # Son frame'de tanınan isim(ler)i tutar
+        self.predicted_names = [] # Son frame'de tanınan isimleri tutar
         self.worker_info_cache = {} # Çalışan bilgilerini cache'le
+        self.unsafe_persons_tracker = {} # Ekipmansız kişileri takip etmek için {person_id: {'timestamp': float, 'reported': bool, 'last_seen_frame': np.ndarray}}
+        self.report_delay = REPORT_DELAY # Raporlama gecikmesi
 
 
     def create_yolo_model(self):
@@ -446,7 +460,7 @@ class StaySafeApp:
         try:
             model = YOLO(self.model_path)
             model.to(self.device) # Modeli uygun cihaza taşı
-            # İlk tahmini yaparak modeli ısıtabiliriz (opsiyonel)
+            # İlk tahmini yaparak model ısıtılabilir (opsiyonel)
             # _ = model(np.zeros((self.height, self.width, 3), dtype=np.uint8))
             logger.info("YOLO modeli başarıyla oluşturuldu ve cihaza yüklendi.")
             return model
@@ -478,117 +492,237 @@ class StaySafeApp:
             logger.error(f"Çalışan arama hatası ({name}): {e}")
             return f"'{name}' aranırken veritabanı hatası."
 
+    def create_safety_report(self, person_id, recognized_name, frame_to_save, missing_equipment_list):
+        """Veritabanına güvenlik ihlali raporu kaydeder ve eksik ekipmanları not eder."""
+        logger.info(f"Rapor oluşturuluyor: ID={person_id}, İsim={recognized_name}, Eksik Ekipman={missing_equipment_list}")
+        employee_instance = None
+        if Employee and recognized_name not in ["Unknown", "Error", None]:
+            try:
+                # Django ORM kullanarak çalışan bulma
+                
+                employee_instance = Employee.objects.filter(name__iexact=recognized_name).first()
+                if not employee_instance:
+                     logger.warning(f"Rapor için çalışan bulunamadı (Django DB): {recognized_name}")
+                # Alternatif: WorkerDatabase'den alınan ID ile Employee bulunur mu?
+                # worker_db_info = self.database.find_employee(recognized_name)
+                # if worker_db_info:
+                #     employee_instance = Employee.objects.filter(id=worker_db_info[0]).first()
+
+            except Exception as e:
+                logger.error(f"Rapor için çalışan aranırken Django DB hatası: {e}")
+
+        try:
+            # Frame'i image dosyasına çevir
+            ret, buffer = cv2.imencode('.jpg', frame_to_save)
+            if not ret:
+                logger.error("Rapor için görüntü JPEG formatına dönüştürülemedi.")
+                return
+
+            image_content = ContentFile(buffer.tobytes(), name=f'report_{person_id}_{int(time.time())}.jpg')
+
+            # Eksik ekipman listesini metne çevir
+            missing_equipment_str = ", ".join(missing_equipment_list) if missing_equipment_list else "Yok"
+
+            # Raporu oluştur
+            report = EmployeeReport(
+                employee=employee_instance,
+                is_equipped=False, # Rapor ekipmansızlık durumu için
+                image=image_content,
+                location="Kamera Görüntüsü", # Varsayılan konum
+                missing_equipment=missing_equipment_str # Eksik ekipmanları kaydet
+            )
+            report.save()
+            logger.info(f"Güvenlik raporu başarıyla kaydedildi: ID={report.id}, Çalışan={employee_instance}")
+
+            # Rapor oluşturulduktan sonra tracker'daki reported flag'ini güncellemek yerine
+            # doğrudan silmek daha basit olabilir veya raporlandı olarak işaretlemek.
+            # Bu işlem process_detection_results içinde yapılıyor.
+
+        except Exception as e:
+            logger.error(f"Güvenlik raporu kaydedilirken hata: {e}", exc_info=True)
+
 
     def process_detection_results(self, frame, results):
-        """Tespit sonuçlarını işler, yüz tanıma yapar ve frame üzerine çizer."""
+        """Tespit sonuçlarını işler, yüz tanıma yapar, raporlamayı yönetir ve frame üzerine çizer."""
         self.predicted_names = [] # Her frame için listeyi temizle
+        current_time = time.time()
+        processed_person_ids = set() # Bu frame'de işlenen kişileri tutalım
+        report_cooldown = 60 # Saniye cinsinden raporlama soğuma süresi
 
-        if results is None: # FrameProcessor'dan hata gelirse
-             # Hata mesajı ekleyebiliriz
+        if results is None:
              cv2.putText(frame, "Processing Error", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,0,255), 2)
+             # Tracker'ı burada temizlemeyelim, belki geçici bir hatadır.
              return frame
 
         try:
             class_names = self.model.names
-            boxes = results[0].boxes.cpu().numpy() # Kutuları CPU'ya alıp NumPy'a çevir
-
+            boxes = results[0].boxes.cpu().numpy()
             persons = [box for box in boxes if class_names[int(box.cls[0])] == 'person']
 
             if not persons:
-                return frame # Person yoksa çık
+                 # Ekranda kimse yoksa, tüm 'unsafe' takipçilerini temizleyebiliriz (opsiyonel)
+                 # self.unsafe_persons_tracker.clear()
+                 return frame
 
-            # En büyük person'ı bul (alanına göre)
-            largest_person = max(persons, key=lambda box: (box.xyxy[0][2] - box.xyxy[0][0]) * (box.xyxy[0][3] - box.xyxy[0][1]))
-            x1, y1, x2, y2 = map(int, largest_person.xyxy[0])
+            # -- Sadece en büyük kişiyi değil, tüm kişileri işleyelim --
+            for person_box in persons:
+                x1, y1, x2, y2 = map(int, person_box.xyxy[0])
+                h_frame, w_frame = frame.shape[:2]
+                x1, y1 = max(0, x1), max(0, y1)
+                x2, y2 = min(w_frame, x2), min(h_frame, y2)
 
-            # Koordinatların frame sınırları içinde kaldığından emin ol
-            h_frame, w_frame = frame.shape[:2]
-            x1, y1 = max(0, x1), max(0, y1)
-            x2, y2 = min(w_frame, x2), min(h_frame, y2)
+                if x1 >= x2 or y1 >= y2: continue # Geçersiz kutu
 
-            if x1 >= x2 or y1 >= y2: # Geçersiz kutu
-                return frame
+                has_helmet = False
+                has_vest = False
+                # Kask ve yelek kontrolü (bu person kutusu içinde)
+                for other_box in boxes:
+                    if np.array_equal(other_box.xyxy, person_box.xyxy): continue
+                    other_class_id = int(other_box.cls[0])
+                    if other_class_id >= len(class_names): continue
+                    other_class_name = class_names[other_class_id]
 
-            has_helmet = False
-            has_vest = False
+                    if other_class_name in ['helmet', 'vest']:
+                        ox1, oy1, ox2, oy2 = map(int, other_box.xyxy[0])
+                        center_x, center_y = (ox1 + ox2) / 2, (oy1 + oy2) / 2
+                        if x1 < center_x < x2 and y1 < center_y < y2:
+                            if other_class_name == 'helmet': has_helmet = True
+                            if other_class_name == 'vest': has_vest = True
+                            # if has_helmet and has_vest: break # Optimizasyon
 
-            # Kask ve yelek kontrolü (person kutusu içinde)
-            for other_box in boxes:
-                # if other_box == largest_person: continue # NumPy array karşılaştırması farklı
-                if np.array_equal(other_box.xyxy, largest_person.xyxy): continue # Kendisiyle karşılaştırma
+                is_safe = has_helmet and has_vest
+                box_color = (0, 255, 0) if is_safe else (0, 0, 255)
+                status_prefix = "Safe" if is_safe else "Unsafe"
+                person_status_text = status_prefix
+                recognized_name = "Unknown"
+                confidence = 0
 
-                other_class_id = int(other_box.cls[0])
-                if other_class_id >= len(class_names): continue # Geçersiz class id
-                other_class_name = class_names[other_class_id]
-
-                if other_class_name == 'helmet' or other_class_name == 'vest':
-                    ox1, oy1, ox2, oy2 = map(int, other_box.xyxy[0])
-                    # Nesnenin merkez noktası person kutusu içinde mi?
-                    center_x = (ox1 + ox2) / 2
-                    center_y = (oy1 + oy2) / 2
-                    if x1 < center_x < x2 and y1 < center_y < y2:
-                        if other_class_name == 'helmet':
-                            has_helmet = True
-                        elif other_class_name == 'vest':
-                            has_vest = True
-                        # if has_helmet and has_vest: break # İkisini de bulduysak devam etmeye gerek yok
-
-
-            person_status_text = ""
-            box_color = (0, 255, 0) # Yeşil (Safe)
-            recognized_name = "Unknown"
-
-            if has_helmet and has_vest:
-                 person_status_text = "Safe"
-                 # Güvenli durumda da yüz tanıma yapabilir miyiz? Opsiyonel.
-                 # face_roi = frame[y1:y2, x1:x2]
-                 # if face_roi.size > 0:
-                 #    name, _ = self.face_recognizer.recognize_faces(face_roi)
-                 #    recognized_name = name if name != "Unknown" else recognized_name
-
-            else: # Güvensiz durum
-                box_color = (0, 0, 255) # Kırmızı (Unsafe)
-                unsafe_reasons = []
-                if not has_helmet: unsafe_reasons.append("No Helmet")
-                if not has_vest: unsafe_reasons.append("No Vest")
-                person_status_text = "Unsafe: " + ", ".join(unsafe_reasons)
-
-
-                # Güvensizse yüz tanıma yap
-                face_roi = frame[y1:y2, x1:x2]
-                if face_roi.size > 0:
-                    name, confidence = self.face_recognizer.recognize_faces(face_roi)
-                    recognized_name = name # Tanınan ismi al
+                # Yüz tanımayı sadece güvensizse VEYA her zaman yapabiliriz?
+                # Şimdilik sadece güvensizse yapalım.
+                person_roi = frame[y1:y2, x1:x2]
+                if not is_safe and person_roi.size > 0:
+                    recognized_name, confidence = self.face_recognizer.recognize_faces(person_roi)
+                    self.predicted_names.append(recognized_name) # Tahmin listesine ekle
                     if recognized_name not in ["Unknown", "Error"]:
-                         # İsmi ve güven skorunu ekle
-                         person_status_text += f" ({recognized_name} - {confidence}%)"
-                         self.predicted_names.append(recognized_name) # Tanınan ismi listeye ekle
+                        person_status_text += f" ({recognized_name} - {confidence}%)"
                     elif recognized_name == "Error":
-                         person_status_text += " (Face Rec Error)"
-                         self.predicted_names.append("Error")
-                    else: # Unknown ise
-                         person_status_text += " (Unknown)"
-                         self.predicted_names.append("Unknown")
+                        person_status_text += " (Face Rec Error)"
+                    else: # Unknown
+                        person_status_text += " (Unknown)"
+                elif person_roi.size == 0:
+                     person_status_text += " (ROI Error)"
+                     # recognized_name = "Unknown" # Zaten varsayılan Unknown
+                     self.predicted_names.append("Unknown")
+                elif is_safe:
+                    # Güvenli ise de tanıma yapıp ismi ekleyebiliriz (opsiyonel)
+                    # recognized_name, confidence = self.face_recognizer.recognize_faces(person_roi)
+                    pass # Güvenli ise status yeterli
 
+                # --- Raporlama Mantığı --- 
+                # Takip için benzersiz bir ID belirleyelim
+                # Tanınan isim varsa onu, yoksa kutu merkezini kullanalım (basit yaklaşım)
+                if recognized_name not in ["Unknown", "Error", None]:
+                    person_id = recognized_name
                 else:
-                    logger.warning("Unsafe durumunda yüz ROI'si boş veya geçersiz.")
-                    person_status_text += " (Face ROI Error)"
-                    self.predicted_names.append("Unknown")
+                    # Tanınmayanlar için yaklaşık konum bazlı ID
+                    center_x = (x1 + x2) // 2
+                    center_y = (y1 + y2) // 2
+                    person_id = f"unknown_at_{center_x}_{center_y}" # Bu ID çok stabil olmayabilir
 
+                processed_person_ids.add(person_id) # Bu frame'de görüldü
 
-            # Kutuyu ve durumu çiz
-            cv2.rectangle(frame, (x1, y1), (x2, y2), box_color, 2)
-            # Yazının okunabilir olması için arka plan ekleyebiliriz
-            (text_width, text_height), baseline = cv2.getTextSize(person_status_text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
-            text_y = y1 - 10 if y1 - 10 > text_height else y1 + text_height + baseline
-            # cv2.rectangle(frame, (x1, text_y - text_height - baseline), (x1 + text_width, text_y + baseline), (0,0,0), -1) # Siyah arka plan
-            cv2.putText(frame, person_status_text, (x1, text_y),
-                      cv2.FONT_HERSHEY_SIMPLEX, 0.7, box_color, 2)
+                if is_safe:
+                    # Eğer kişi güvenli hale geldiyse ve takip ediliyorsa, takipten çıkar
+                    if person_id in self.unsafe_persons_tracker:
+                        logger.debug(f"{person_id} güvenli hale geldi, takipten çıkarılıyor.")
+                        del self.unsafe_persons_tracker[person_id]
+                else: # Güvensiz durum
+                    if person_id not in self.unsafe_persons_tracker:
+                        # Kişi ilk kez güvensiz görüldü, takibe al
+                        logger.info(f"{person_id} güvensiz tespit edildi, takip başlatılıyor.")
+                        self.unsafe_persons_tracker[person_id] = {
+                            'timestamp': current_time,
+                            'reported': False,
+                            'last_seen_frame': person_roi.copy(), # Rapor için ROI'yi sakla
+                            'last_report_time': 0 # İlk başta raporlanmadı
+                        }
+                    else:
+                        # Kişi zaten takipte, süreyi ve rapor durumunu kontrol et
+                        tracker_entry = self.unsafe_persons_tracker[person_id]
+                        time_elapsed = current_time - tracker_entry['timestamp']
+                        can_report_again = current_time - tracker_entry.get('last_report_time', 0) > report_cooldown
+
+                        # Süre dolduysa VE henüz raporlanmadıysa VEYA raporlandı ama soğuma süresi bittiyse VE yüz tanındıysa rapor oluştur
+                        should_report = (time_elapsed >= self.report_delay and
+                                         (not tracker_entry['reported'] or can_report_again) and
+                                         recognized_name not in ["Unknown", "Error", None])
+
+                        if should_report:
+                            logger.info(f"{person_id} ({recognized_name}) için raporlama koşulları sağlandı. Rapor oluşturuluyor...")
+
+                            # Eksik ekipmanları belirle
+                            missing_equipment_list = []
+                            if not has_helmet: missing_equipment_list.append("Baret")
+                            if not has_vest: missing_equipment_list.append("Yelek")
+
+                            # Rapor için son görülen frame'i (ROI) kullan
+                            self.create_safety_report(person_id, recognized_name, tracker_entry['last_seen_frame'], missing_equipment_list)
+
+                            # Raporlandı olarak işaretle ve son rapor zamanını güncelle
+                            tracker_entry['reported'] = True
+                            tracker_entry['last_report_time'] = current_time
+                            # Opsiyonel: timestamp'i sıfırlayıp delay'i tekrar başlatabiliriz ama cooldown varken gerekmeyebilir
+                            # tracker_entry['timestamp'] = current_time
+
+                        elif not tracker_entry['reported']:
+                             # Raporlanmadıysa son frame'i güncelle (henüz rapor süresi dolmamış olabilir)
+                            self.unsafe_persons_tracker[person_id]['last_seen_frame'] = person_roi.copy()
+
+                        # Sürekli güvensiz kalanlar için status'a uyarı ekleyebiliriz
+                        if tracker_entry['reported'] and not can_report_again:
+                             remaining_cooldown = int(report_cooldown - (current_time - tracker_entry['last_report_time']))
+                             person_status_text += f" (Raporlandı - {remaining_cooldown}s)"
+                        elif tracker_entry['reported']:
+                             person_status_text += " (Raporlandı)" # Soğuma bitti ama hala güvensizse
+                        elif time_elapsed > 1:
+                            person_status_text += f" ({int(time_elapsed)}s)" # Kaç sn güvensiz
+
+                # --- Çizim --- 
+                cv2.rectangle(frame, (x1, y1), (x2, y2), box_color, 2)
+                (text_width, text_height), baseline = cv2.getTextSize(person_status_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+                text_y = y1 - 10 if y1 - 10 > text_height else y1 + text_height + 5
+                # Arka plan ekleyelim
+                cv2.rectangle(frame, (x1, text_y - text_height - baseline), (x1 + text_width, text_y + baseline), (0,0,0), -1)
+                cv2.putText(frame, person_status_text, (x1, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, box_color, 2)
+
+            # --- Takipçi Temizliği --- 
+            # Bu frame'de görülmeyen ama hala takipte olanları kontrol et
+            stale_ids = set(self.unsafe_persons_tracker.keys()) - processed_person_ids
+            for stale_id in stale_ids:
+                 # Ne kadar süredir görülmedi?
+                 tracker_entry = self.unsafe_persons_tracker[stale_id]
+                 time_since_last_seen = current_time - tracker_entry['timestamp'] # İlk görüldüğü zamandan beri geçen süre
+                 last_report_time = tracker_entry.get('last_report_time', 0)
+                 is_reported = tracker_entry.get('reported', False)
+                 cooldown_active = is_reported and (current_time - last_report_time <= report_cooldown)
+
+                 # Silme koşullarını gözden geçirelim:
+                 # 1. Raporlanmadıysa ve uzun süre (delay*2) görülmediyse sil
+                 if not is_reported and time_since_last_seen > self.report_delay * 2:
+                     logger.debug(f"Takipteki {stale_id} uzun süredir görülmedi (raporlanmadı), takipten çıkarılıyor.")
+                     del self.unsafe_persons_tracker[stale_id]
+                 # 2. Raporlandıysa, soğuma süresi bittiyse VE uzun süre (delay*5) görülmediyse sil
+                 elif is_reported and not cooldown_active and time_since_last_seen > self.report_delay * 5:
+                     logger.debug(f"Raporlanan {stale_id} uzun süredir görülmedi (soğuma bitti), takipten çıkarılıyor.")
+                     del self.unsafe_persons_tracker[stale_id]
+                 # 3. Raporlandıysa ve soğuma süresi aktifken kişi kaybolduysa? Şimdilik tutuyoruz.
+                 # else:
+                 #    logger.debug(f"Stale ID {stale_id} durumu: reported={is_reported}, cooldown_active={cooldown_active}, time_since_last_seen={time_since_last_seen:.1f}s. Henüz silinmiyor.")
+
 
         except Exception as e:
              logger.error(f"Sonuç işleme hatası (process_detection_results): {e}", exc_info=True)
              cv2.putText(frame, "Result Processing Error", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,0,255), 2)
-
 
         return frame
 
@@ -596,13 +730,13 @@ class StaySafeApp:
         """Kamerayı ve ilgili işlemleri açıp kapatır."""
         try:
             if self.camera_active:
-                # Kamerayı ve işlemciyi durdur
                 logger.info("Kamera kapatılıyor...")
-                self.frame_processor.stop() # Önce işlemciyi durdur
-                self.face_recognizer.release_camera() # Sonra kamerayı serbest bırak
+                self.frame_processor.stop()
+                self.face_recognizer.release_camera()
                 self.camera_active = False
-                self.predicted_names = [] # Kapatırken listeyi temizle
-                self.worker_info_cache = {} # Cache'i temizle
+                self.predicted_names = []
+                self.worker_info_cache = {}
+                self.unsafe_persons_tracker.clear() # Kapatırken takip listesini temizle
                 logger.info("Kamera ve frame işleyici başarıyla durduruldu.")
                 return False
             else:
@@ -627,6 +761,7 @@ class StaySafeApp:
             except Exception as cleanup_err:
                  logger.error(f"Hata sonrası temizlik sırasında ek hata: {cleanup_err}")
             self.camera_active = False # Hata durumunda kapalı olarak işaretle
+            self.unsafe_persons_tracker.clear() # Hata durumunda da temizle
             raise Exception(f"Kamera durumu değiştirilemedi: {str(e)}") # Hatayı yukarıya ilet
 
 
@@ -821,3 +956,19 @@ def get_worker_info(request):
              return JsonResponse({'status': 'info', 'message': f'Geçerli çalışan tanınmadı. Son tahmin: {last_prediction}'})
     else:
          return JsonResponse({'status': 'error', 'error': 'Invalid request method'}, status=405)
+
+def report_list(request):
+    """
+    Veritabanındaki tüm güvenlik raporlarını listeler.
+    """
+    reports = EmployeeReport.objects.all() # Tüm raporları al (ordering model meta'da tanımlı)
+    context = {
+        'reports': reports
+    }
+    return render(request, 'reports/report_list.html', context)
+
+# İleride rapor detaylarını görmek için bir view daha eklenebilir:
+# def report_detail(request, report_id):
+#     report = get_object_or_404(EmployeeReport, pk=report_id)
+#     context = {'report': report}
+#     return render(request, 'reports/report_detail.html', context)
