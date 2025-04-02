@@ -42,6 +42,7 @@ INSTALLED_APPS = [
     'display',
     'employees',
     'reports',
+    'faceRecognition_train',
 ]
 
 MIDDLEWARE = [

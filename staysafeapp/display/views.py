@@ -19,10 +19,19 @@ from django.core.files.base import ContentFile # Rapor görüntüsü kaydetmek i
 from django.core.files.storage import default_storage # Dosya işlemleri için
 from reports.models import EmployeeReport # Rapor modelini import et
 
+# ArcFace için eklenenler
+import torch.nn as nn
+from torchvision.transforms import v2 as T
+from PIL import Image
 
 # Logging ayarları
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# --- Yüz Tanıma Yöntemi Seçimi ---
+# Değerler: 'lbph' veya 'arcface'
+FACE_RECOGNITION_METHOD = input('Yüz tanıma yöntemi seçin (lbph/arcface): ')
+logger.info(f"Kullanılacak yüz tanıma yöntemi: {FACE_RECOGNITION_METHOD}")
 
 
 try:
@@ -38,8 +47,10 @@ warnings.filterwarnings('ignore', category=UserWarning)
 # Bu yapıya göre BASE_DIR, 'staysafeapp' klasörü
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STATIC_DIR = os.path.join(BASE_DIR, 'static')
+MODELS_DIR = os.path.join(STATIC_DIR, 'models') # ArcFace modelinin kaydedildiği yer
 logger.info(f"Proje Ana Dizini (BASE_DIR): {BASE_DIR}")
 logger.info(f"Statik Dosya Dizini (STATIC_DIR): {STATIC_DIR}")
+logger.info(f"Modeller Dizini (MODELS_DIR): {MODELS_DIR}")
 
 
 # Kamera ayarları
@@ -74,66 +85,159 @@ except AttributeError:
     logger.warning("cv2.data.haarcascades bulunamadı. Cascade yolu manuel olarak ayarlanmalı veya static klasörüne konulmalı.")
     CASCADE_PATH = os.path.join(STATIC_DIR, 'haarcascade_frontalface_default.xml') # Statik klasördeki cascade kullanılacak
 
+# ArcFace için eklenen dosya yolları
+ARCFACE_MODEL_PATH = os.path.join(MODELS_DIR, 'arcface_model.pth')
+CLASS_NAMES_PATH = os.path.join(MODELS_DIR, 'class_names.json')
+
 REPORT_DELAY = 5 # Raporlama öncesi bekleme süresi (saniye)
 
+# --- ArcFace Model Tanımı (faceRecognition_train/views.py'den alındı) ---
+class ArcFaceModel(nn.Module):
+    def __init__(self, num_classes, embedding_dim=512):
+        super(ArcFaceModel, self).__init__()
+        # Basitleştirilmiş bir backbone (örnek, gerçek bir ResNet vb. kullanılabilir)
+        self.backbone = nn.Sequential(
+            nn.Conv2d(3, 64, kernel_size=3, padding=1), nn.BatchNorm2d(64), nn.ReLU(), nn.MaxPool2d(2),
+            nn.Conv2d(64, 128, kernel_size=3, padding=1), nn.BatchNorm2d(128), nn.ReLU(), nn.MaxPool2d(2),
+            nn.Conv2d(128, 256, kernel_size=3, padding=1), nn.BatchNorm2d(256), nn.ReLU(), nn.MaxPool2d(2),
+            nn.Conv2d(256, 512, kernel_size=3, padding=1), nn.BatchNorm2d(512), nn.ReLU(), nn.MaxPool2d(2),
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten(),
+            nn.Linear(512, embedding_dim)
+        )
+        self.num_classes = num_classes
+        self.embedding_dim = embedding_dim
+        # ArcFace loss katmanı burada tanımlanmıyor, sadece embedding çıkarılıyor
+        # Sınıflandırma için bir lineer katman eklenebilir veya embedding karşılaştırması yapılabilir.
+        # Şimdilik eğitimdeki gibi yapalım:
+        self.weight = nn.Parameter(torch.FloatTensor(num_classes, embedding_dim))
+        nn.init.xavier_uniform_(self.weight)
 
-# --- Yüz Tanıma Sınıfı ---
+    def forward(self, x):
+        features = self.backbone(x)
+        features = nn.functional.normalize(features, p=2, dim=1)
+        # Eğer sadece embedding isteniyorsa burayı döndür:
+        # return features
+
+        # Eğitimdeki gibi sınıflandırma çıktısı (logitler/cosine similarity):
+        weight = nn.functional.normalize(self.weight, p=2, dim=1)
+        cos = nn.functional.linear(features, weight)
+        return cos
+
+# --- Yüz Tanıma Sınıfı (Güncellendi) ---
 class FaceRecognitionSystem:
     def __init__(self):
-        self.recognizer = cv2.face.LBPHFaceRecognizer_create()
+        self.method = FACE_RECOGNITION_METHOD
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.model_loaded = False
+        self.names = {} # LBPH için {id: name}, ArcFace için {index: name}
+        self.cam = None
+
+        # Ortak: Yüz tespiti için cascade
         if not os.path.exists(CASCADE_PATH):
              logger.error(f"Yüz tespiti için cascade dosyası yüklenemedi: {CASCADE_PATH}")
              self.face_cascade = None
         else:
             self.face_cascade = cv2.CascadeClassifier(CASCADE_PATH)
 
-        self.names = {}
-        self.cam = None
-        self.model_loaded = False # Modelin laod kontrolü
+        # Modele özel yüklemeler
         try:
-            self.load_model()
+            if self.method == 'lbph':
+                self.recognizer = cv2.face.LBPHFaceRecognizer_create()
+                self.load_lbph_model()
+                self.load_lbph_names()
+            elif self.method == 'arcface':
+                self.recognizer = None # ArcFace için OpenCV recognizer kullanılmıyor
+                self.load_arcface_model()
+                self.load_arcface_class_names() # Class index -> name
+                # ArcFace için gerekli transformasyonları tanımla
+                self.transform = T.Compose([
+                    T.Resize((224, 224)),
+                    T.ToTensor(),
+                    T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+                ])
+            else:
+                logger.error(f"Geçersiz yüz tanıma yöntemi: {self.method}")
+                self.model_loaded = False
         except Exception as e:
-            logger.warning(f"Yüz tanıma modeli ({TRAINER_FILE}) yüklenirken hata oluştu: {e}")
-        self.load_names()
-        # Kamera başlangıçta başlatılmıyor, toggle_camera ile yönetilecek
+            logger.exception(f"{self.method} modeli yüklenirken hata oluştu")
+            self.model_loaded = False
 
-    def load_model(self):
-        """Eğitilmiş yüz tanıma modelini yükler."""
-        self.model_loaded = False
+    def load_lbph_model(self):
+        """LBPH modelini (.yml) yükler."""
         if not os.path.exists(TRAINER_FILE):
-            logger.warning(f"Trainer dosyası bulunamadı: {TRAINER_FILE}. Yüz tanıma yapılamayacak.")
+            logger.warning(f"LBPH Trainer dosyası bulunamadı: {TRAINER_FILE}. Yüz tanıma yapılamayacak.")
             return
-
         try:
             self.recognizer.read(TRAINER_FILE)
             self.model_loaded = True
-            logger.info("Yüz tanıma modeli (trainer.yml) başarıyla yüklendi.")
+            logger.info("LBPH yüz tanıma modeli (trainer.yml) başarıyla yüklendi.")
         except cv2.error as e:
-             logger.error(f"Trainer dosyası ({TRAINER_FILE}) okunurken OpenCV hatası: {e}. Dosya bozuk veya uyumsuz olabilir.")
+             logger.error(f"LBPH Trainer dosyası ({TRAINER_FILE}) okunurken OpenCV hatası: {e}. Dosya bozuk veya uyumsuz olabilir.")
         except Exception as e:
-            logger.error(f"Trainer dosyası ({TRAINER_FILE}) yüklenirken beklenmedik hata: {e}")
+            logger.error(f"LBPH Trainer dosyası ({TRAINER_FILE}) yüklenirken beklenmedik hata: {e}")
 
-    def load_names(self):
-        """ID-İsim eşleşmelerini JSON dosyasından yükler."""
+    def load_lbph_names(self):
+        """LBPH için ID-İsim eşleşmelerini JSON dosyasından yükler."""
         if not os.path.exists(NAMES_FILE):
-            logger.warning(f"Names dosyası bulunamadı: {NAMES_FILE}. İsimler 'Unknown' olarak gösterilecek.")
+            logger.warning(f"LBPH Names dosyası bulunamadı: {NAMES_FILE}. İsimler 'Unknown' olarak gösterilecek.")
             self.names = {}
             return
-
         try:
-            with open(NAMES_FILE, 'r', encoding='utf-8') as fs: # utf-8 ekleyelim
+            with open(NAMES_FILE, 'r', encoding='utf-8') as fs:
                 content = fs.read().strip()
                 if content:
-                    self.names = json.loads(content)
-                    logger.info(f"İsim eşleşmeleri ({NAMES_FILE}) yüklendi: {self.names}")
+                    self.names = json.loads(content) # { "id_str": "name" }
+                    logger.info(f"LBPH İsim eşleşmeleri ({NAMES_FILE}) yüklendi: {self.names}")
                 else:
-                    logger.warning(f"Names dosyası ({NAMES_FILE}) boş.")
+                    logger.warning(f"LBPH Names dosyası ({NAMES_FILE}) boş.")
                     self.names = {}
-        except json.JSONDecodeError as e:
-             logger.error(f"Names dosyası ({NAMES_FILE}) JSON formatında değil: {e}")
-             self.names = {}
         except Exception as e:
-            logger.error(f"Names dosyası ({NAMES_FILE}) yüklenirken hata: {e}")
+            logger.error(f"LBPH Names dosyası ({NAMES_FILE}) yüklenirken hata: {e}")
+            self.names = {}
+
+    def load_arcface_model(self):
+        """ArcFace modelini (.pth) yükler."""
+        if not os.path.exists(ARCFACE_MODEL_PATH):
+            logger.error(f"ArcFace model dosyası bulunamadı: {ARCFACE_MODEL_PATH}")
+            return
+        if not os.path.exists(CLASS_NAMES_PATH):
+            logger.error(f"ArcFace sınıf isimleri dosyası bulunamadı: {CLASS_NAMES_PATH}")
+            return # Model yüklense bile isimler olmadan anlamsız
+
+        try:
+            # Önce sınıf sayısını öğrenmemiz lazım
+            with open(CLASS_NAMES_PATH, 'r') as f:
+                class_names = json.load(f)
+            num_classes = len(class_names)
+            if num_classes == 0:
+                logger.error("Sınıf isimleri dosyası boş.")
+                return
+
+            # Modeli tanımla ve state dict'i yükle
+            self.arcface_model = ArcFaceModel(num_classes=num_classes).to(self.device)
+            self.arcface_model.load_state_dict(torch.load(ARCFACE_MODEL_PATH, map_location=self.device))
+            self.arcface_model.eval() # Modeli çıkarım moduna al
+            self.model_loaded = True
+            logger.info(f"ArcFace modeli ({ARCFACE_MODEL_PATH}) ve {num_classes} sınıf başarıyla yüklendi.")
+        except Exception as e:
+            logger.exception(f"ArcFace modeli yüklenirken hata oluştu")
+            self.model_loaded = False
+
+    def load_arcface_class_names(self):
+        """ArcFace için index-isim eşleşmelerini JSON dosyasından yükler."""
+        if not os.path.exists(CLASS_NAMES_PATH):
+            logger.warning(f"ArcFace sınıf isimleri dosyası bulunamadı: {CLASS_NAMES_PATH}. İsimler 'Unknown' olarak gösterilecek.")
+            self.names = {}
+            return
+        try:
+            with open(CLASS_NAMES_PATH, 'r') as f:
+                # Dosya ["isim1", "isim2", ...] formatında olmalı
+                class_list = json.load(f)
+                self.names = {i: name for i, name in enumerate(class_list)} # { index: name }
+            logger.info(f"ArcFace sınıf isimleri ({CLASS_NAMES_PATH}) yüklendi: {list(self.names.values())}")
+        except Exception as e:
+            logger.error(f"ArcFace sınıf isimleri ({CLASS_NAMES_PATH}) yüklenirken hata: {e}")
             self.names = {}
 
     def release_camera(self):
@@ -158,7 +262,6 @@ class FaceRecognitionSystem:
 
             self.cam.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA['width'])
             self.cam.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA['height'])
-            # Kamera ayarlarının gerçekten uygulanıp uygulanmadığını kontrol etme işlemi. Extra kameralar destekliyor mu kontrol edilecek.
             actual_width = self.cam.get(cv2.CAP_PROP_FRAME_WIDTH)
             actual_height = self.cam.get(cv2.CAP_PROP_FRAME_HEIGHT)
             logger.info(f"Kamera başarıyla başlatıldı. İstenen: {CAMERA['width']}x{CAMERA['height']}, Alınan: {int(actual_width)}x{int(actual_height)}")
@@ -171,12 +274,11 @@ class FaceRecognitionSystem:
             return False
 
     def recognize_faces(self, img):
-        """Verilen görüntüdeki yüzü tanır."""
+        """Verilen görüntüdeki yüzü, seçilen yönteme göre tanır."""
         name = "Unknown"
         confidence_score = 0
 
         if not self.model_loaded:
-             #logger.debug("Yüz tanıma modeli yüklenmediği için tanıma yapılamıyor.")
              return name, confidence_score # Model yoksa direkt Unknown dön
 
         if self.face_cascade is None:
@@ -184,70 +286,83 @@ class FaceRecognitionSystem:
             return name, confidence_score
 
         try:
-            # Görüntü zaten BGR ise tekrar dönüştürmeye gerek yok, ancak ROI gri olmalı
+            # 1. Yüz Tespiti (Her iki yöntem için ortak)
             if len(img.shape) == 3 and img.shape[2] == 3:
                  gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
             elif len(img.shape) == 2:
-                 gray = img # Zaten gri ise kullan
+                 gray = img
             else:
                  logger.warning(f"Beklenmedik görüntü formatı: shape={img.shape}")
                  return "Error", 0
 
-
-            # Yüz tespiti (ROI üzerinde değil, gelen orijinal ROI üzerinde)
             faces = self.face_cascade.detectMultiScale(
-                gray, # Gri tonlamalı görüntü kullanılmalı
+                gray,
                 scaleFactor=FACE_DETECTION['scale_factor'],
                 minNeighbors=FACE_DETECTION['min_neighbors'],
                 minSize=FACE_DETECTION['min_size']
             )
 
             if len(faces) > 0:
-                # En büyük yüzü secme islemi (genellikle en belirgin olanı)
                 faces = sorted(faces, key=lambda f: f[2]*f[3], reverse=True)
                 x, y, w, h = faces[0]
-
-                # Yüz ROI'sini al (gri görüntüden)
+                face_roi_bgr = img[y:y+h, x:x+w] # Renkli ROI alalım (ArcFace için lazım)
                 face_roi_gray = gray[y:y+h, x:x+w]
 
-                if face_roi_gray.size == 0:
+                if face_roi_bgr.size == 0 or face_roi_gray.size == 0:
                     logger.warning("Tespit edilen yüz ROI'si boş.")
                     return name, confidence_score
 
-                try:
-                    # Tanıma yap
-                    id_recognized, confidence = self.recognizer.predict(face_roi_gray)
+                # 2. Tanıma (Yönteme göre farklılık gösterir)
+                if self.method == 'lbph':
+                    try:
+                        id_recognized, confidence = self.recognizer.predict(face_roi_gray)
+                        if confidence < 80: # LBPH: Düşük confidence iyi
+                            name = self.names.get(str(id_recognized), "Unknown")
+                            confidence_score = round((1 - (confidence / 100)) * 100)
+                        else:
+                             name = "Unknown"
+                             confidence_score = round((1 - (confidence / 100)) * 100)
+                    except cv2.error as cv_err:
+                        logger.warning(f"LBPH predict hatası: {cv_err}")
+                        name = "Error"
+                    except Exception as pred_err:
+                        logger.error(f"LBPH predict sırasında beklenmedik hata: {pred_err}")
+                        name = "Error"
 
-                    # Confidence: Düşük değer daha iyi eşleşme (0 mükemmel eşleşme)
-                    # 0-100 arası bir güven skoruna çevir
-                    # Eşik değeri (örn. 70-80) threshold 
-                    if confidence < 80: # Eşik değeri - daha düşükse daha güvenli
-                        name = self.names.get(str(id_recognized), "Unknown")
-                        confidence_score = round((1 - (confidence / 100)) * 100) # Basit bir dönüşüm
-                        # logger.debug(f"Tanınan ID: {id_recognized}, İsim: {name}, Confidence(LBPH): {confidence:.2f}, Skor: {confidence_score}")
-                    else:
-                         name = "Unknown"
-                         confidence_score = round((1 - (confidence / 100)) * 100) # Düşük skor
-                         # logger.debug(f"Tanınan ID: {id_recognized}, Confidence çok yüksek: {confidence:.2f}. 'Unknown' kabul edildi.")
+                elif self.method == 'arcface':
+                    try:
+                        # Görüntüyü hazırla (PIL -> Transform -> Tensor)
+                        face_pil = Image.fromarray(cv2.cvtColor(face_roi_bgr, cv2.COLOR_BGR2RGB))
+                        face_tensor = self.transform(face_pil).unsqueeze(0).to(self.device) # Batch dim ekle
 
+                        # Model çıkarımı
+                        with torch.no_grad():
+                            outputs = self.arcface_model(face_tensor)
+                        
+                        # Sonucu işle (Cosine similarity varsayımıyla)
+                        probabilities = torch.softmax(outputs, dim=1) # Veya sadece argmax(outputs)
+                        confidence, predicted_idx = torch.max(probabilities, 1)
+                        
+                        predicted_idx = predicted_idx.item()
+                        confidence = confidence.item() * 100 # Yüzdeye çevir
 
-                except cv2.error as cv_err:
-                    # Tanıma sırasında hata (örn. model uyumsuzluğu)
-                    logger.warning(f"OpenCV predict hatası: {cv_err}. Model veya ROI ile ilgili sorun olabilir.")
-                    name = "Error"
-                    confidence_score = 0
-                except Exception as pred_err:
-                    logger.error(f"Yüz tanıma (predict) sırasında beklenmedik hata: {pred_err}")
-                    name = "Error"
-                    confidence_score = 0
-            # else: # Yüz tespit edilemediyse
-                # logger.debug("Görüntüde yüz tespit edilemedi.")
-
+                        # Güven eşiği (ArcFace için % olarak)
+                        if confidence > 60: # Eşik değeri (ayarlanabilir)
+                            name = self.names.get(predicted_idx, "Unknown")
+                            confidence_score = round(confidence)
+                        else:
+                            name = "Unknown"
+                            confidence_score = round(confidence)
+                            
+                    except Exception as pred_err:
+                        logger.exception(f"ArcFace predict sırasında hata oluştu")
+                        name = "Error"
+            # else: # Yüz tespit edilemedi
+                # pass
 
         except Exception as e:
-            logger.error(f"Yüz tanıma genel hata: {e}")
+            logger.exception(f"Yüz tanıma genel hatası")
             name = "Error"
-            confidence_score = 0
 
         return name, confidence_score
 

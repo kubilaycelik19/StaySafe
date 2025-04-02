@@ -29,4 +29,5 @@ urlpatterns = [
     path('display/', include('display.urls')),
     path('employees/', include('employees.urls')),
     path('reports/', include('reports.urls')),
+    path('face-recognition-train/', include('faceRecognition_train.urls')),  # Yeni eklenen URL
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

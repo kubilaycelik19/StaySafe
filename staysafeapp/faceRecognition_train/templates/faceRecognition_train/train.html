@@ -1,0 +1,153 @@
+{% extends 'layout.html' %}
+{% load static %}
+
+{% block page_title %}Model Eğitimi{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <h2 class="mb-4">ArcFace Model Eğitimi</h2>
+    
+    <div class="row">
+        <div class="col-md-8">
+            <div class="card">
+                <div class="card-body">
+                    <h5 class="card-title">Eğitim Durumu</h5>
+                    <div id="trainingStatus" class="alert alert-info">
+                        Eğitim başlatmak için "Eğitimi Başlat" butonuna tıklayın.
+                    </div>
+                    
+                    <div id="trainingProgress" class="progress mb-3" style="display: none;">
+                        <div class="progress-bar progress-bar-striped progress-bar-animated" 
+                             role="progressbar" style="width: 0%"></div>
+                    </div>
+                    
+                    <div id="trainingResults" class="mt-3">
+                        <h6>Eğitim Sonuçları:</h6>
+                        <ul class="list-group">
+                            <li class="list-group-item">Model Dosyası: <span id="modelPath">-</span></li>
+                            <li class="list-group-item">Sınıf Sayısı: <span id="numClasses">-</span></li>
+                            <li class="list-group-item">Son Epoch Loss: <span id="lastLoss">-</span></li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="col-md-4">
+            <div class="card">
+                <div class="card-body">
+                    <h5 class="card-title">Eğitim Kontrolleri</h5>
+                    
+                    <div class="mb-3">
+                        <label class="form-label">Veri Seti Dizini</label>
+                        <input type="text" class="form-control" value="{{ dataset_dir }}" readonly>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label class="form-label">Epoch Sayısı</label>
+                        <input type="number" class="form-control" id="numEpochs" value="50" min="1" max="200">
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label class="form-label">Batch Size</label>
+                        <input type="number" class="form-control" id="batchSize" value="32" min="1" max="128">
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label class="form-label">Öğrenme Oranı</label>
+                        <input type="number" class="form-control" id="learningRate" value="0.001" step="0.0001">
+                    </div>
+                    
+                    <div class="d-grid gap-2">
+                        <button id="startTraining" class="btn btn-primary">
+                            Eğitimi Başlat
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block js_files %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const startTrainingBtn = document.getElementById('startTraining');
+    const trainingStatus = document.getElementById('trainingStatus');
+    const trainingProgress = document.getElementById('trainingProgress');
+    const progressBar = trainingProgress.querySelector('.progress-bar');
+    const modelPath = document.getElementById('modelPath');
+    const numClasses = document.getElementById('numClasses');
+    const lastLoss = document.getElementById('lastLoss');
+    
+    let currentEpoch = 0;
+    let totalEpochs = 50;
+    
+    startTrainingBtn.addEventListener('click', async function() {
+        try {
+            // Eğitim parametrelerini al
+            const numEpochs = parseInt(document.getElementById('numEpochs').value);
+            const batchSize = parseInt(document.getElementById('batchSize').value);
+            const learningRate = parseFloat(document.getElementById('learningRate').value);
+            
+            // Butonu devre dışı bırak
+            startTrainingBtn.disabled = true;
+            
+            // Progress bar'ı göster
+            trainingProgress.style.display = 'block';
+            progressBar.style.width = '0%';
+            
+            // Eğitimi başlat
+            const response = await fetch('{% url "faceRecognition_train:train_model" %}', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': getCookie('csrftoken')
+                },
+                body: JSON.stringify({
+                    num_epochs: numEpochs,
+                    batch_size: batchSize,
+                    learning_rate: learningRate
+                })
+            });
+            
+            const data = await response.json();
+            
+            if (data.status === 'success') {
+                trainingStatus.innerHTML = '<div class="alert alert-success">' + data.message + '</div>';
+                modelPath.textContent = data.model_path;
+                numClasses.textContent = data.num_classes;
+                
+                // Eğitim grafiğini göster
+                const graphPath = data.model_path.replace('arcface_model.pth', 'training_loss.png');
+                trainingStatus.innerHTML += `<img src="${graphPath}" class="img-fluid mt-3" alt="Eğitim Grafiği">`;
+            } else {
+                trainingStatus.innerHTML = '<div class="alert alert-danger">' + data.message + '</div>';
+            }
+        } catch (error) {
+            trainingStatus.innerHTML = '<div class="alert alert-danger">Hata: ' + error.message + '</div>';
+        } finally {
+            // Butonu tekrar aktif et
+            startTrainingBtn.disabled = false;
+        }
+    });
+    
+    // CSRF token alma fonksiyonu
+    function getCookie(name) {
+        let cookieValue = null;
+        if (document.cookie && document.cookie !== '') {
+            const cookies = document.cookie.split(';');
+            for (let i = 0; i < cookies.length; i++) {
+                const cookie = cookies[i].trim();
+                if (cookie.substring(0, name.length + 1) === (name + '=')) {
+                    cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+                    break;
+                }
+            }
+        }
+        return cookieValue;
+    }
+});
+</script>
+{% endblock %} 
