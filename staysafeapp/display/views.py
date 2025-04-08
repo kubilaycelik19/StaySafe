@@ -77,7 +77,6 @@ try:
     CASCADE_PATH = os.path.join(cv2.data.haarcascades, 'haarcascade_frontalface_default.xml')
     if not os.path.exists(CASCADE_PATH):
         logger.error(f"Haarcascade dosyası bulunamadı: {CASCADE_PATH}")
-        # Alternatif bir yol veya hata verme stratejisi eklenebilir
         CASCADE_PATH = os.path.join(STATIC_DIR, 'haarcascade_frontalface_default.xml') # Statik klasörde de arandı
         logger.warning(f"Statik klasördeki cascade kullanılacak: {CASCADE_PATH}")
 
@@ -109,7 +108,7 @@ class ArcFaceModel(nn.Module):
         self.embedding_dim = embedding_dim
         # ArcFace loss katmanı burada tanımlanmıyor, sadece embedding çıkarılıyor
         # Sınıflandırma için bir lineer katman eklenebilir veya embedding karşılaştırması yapılabilir.
-        # Şimdilik eğitimdeki gibi yapalım:
+        # Şimdilik eğitimdeki yapıldı. Duruma göre değiştirecem.
         self.weight = nn.Parameter(torch.FloatTensor(num_classes, embedding_dim))
         nn.init.xavier_uniform_(self.weight)
 
@@ -124,7 +123,7 @@ class ArcFaceModel(nn.Module):
         cos = nn.functional.linear(features, weight)
         return cos
 
-# --- Yüz Tanıma Sınıfı (Güncellendi) ---
+# --- Yüz Tanıma Sınıfı ---
 class FaceRecognitionSystem:
     def __init__(self):
         self.method = FACE_RECOGNITION_METHOD
@@ -150,7 +149,7 @@ class FaceRecognitionSystem:
                 self.recognizer = None # ArcFace için OpenCV recognizer kullanılmıyor
                 self.load_arcface_model()
                 self.load_arcface_class_names() # Class index -> name
-                # ArcFace için gerekli transformasyonları tanımla
+                # ArcFace için gerekli dönüşümler
                 self.transform = T.Compose([
                     T.Resize((224, 224)),
                     T.ToTensor(),
@@ -455,7 +454,6 @@ class FrameProcessor:
 class StaySafeApp:
     def __init__(self, model_path: str, width=640, height=480):
         self.model_path = model_path
-        # self.db_path = db_path # Kaldırıldı
         self.width = width # YOLO'nun işleyeceği genişlik
         self.height = height # Kamera yüksekliği (bilgi amaçlı)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -466,7 +464,6 @@ class StaySafeApp:
             raise FileNotFoundError(f"Gerekli YOLO modeli bulunamadı: {self.model_path}")
         self.model = self.create_yolo_model()
 
-        # self.database = WorkersDatabase(db_name=self.db_path) # Kaldırıldı
         self.face_recognizer = FaceRecognitionSystem()
 
         if self.device.type == 'cuda':

@@ -1,6 +1,8 @@
 # Dataset klasörü
 dataset/
+
 StaySafe/images/
+StaySafe/staysafeapp/media/reports/
 # Python
 __pycache__/
 *.py[cod]
