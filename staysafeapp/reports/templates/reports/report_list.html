@@ -5,31 +5,49 @@
 
 {% block content %}
 <div class="container mt-4">
-    <div class="card">
-        <div class="card-header bg-warning">
-            <h5 class="card-title mb-0">
+    <div class="card shadow mb-4">
+        <div class="card-header py-3 bg-warning">
+            <h5 class="card-title mb-0 text-dark">
                 <i class="fas fa-clipboard-list me-2"></i>
                 Güvenlik Raporları
             </h5>
         </div>
         <div class="card-body">
+            {# Mesajları gösterme alanı (Başarı/Hata) #}
+            {% if messages %}
+                {% for message in messages %}
+                    <div class="alert alert-{{ message.tags }} alert-dismissible fade show" role="alert">
+                        {{ message }}
+                        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                    </div>
+                {% endfor %}
+            {% endif %}
+
             <div class="table-responsive">
-                <table class="table table-hover">
-                    <thead>
+                <table class="table table-hover table-striped">
+                    <thead class="table-dark">
                         <tr>
                             <th>Çalışan</th>
                             <th>Tarih/Saat</th>
                             <th>Konum</th>
                             <th>Ekipman Durumu</th>
+                            <th>Eksik Ekipman</th>
+                            <th>Görsel</th>
                             <th>İşlemler</th>
                         </tr>
                     </thead>
                     <tbody>
                         {% for report in reports %}
                         <tr>
-                            <td>{{ report.employee.name }} {{ report.employee.surname }}</td>
-                            <td>{{ report.timestamp|date:"d.m.Y H:i" }}</td>
-                            <td>{{ report.location|default:"Belirtilmemiş" }}</td>
+                            <td>
+                                {% if report.employee %}
+                                    {{ report.employee.name }} {{ report.employee.surname }}
+                                {% else %}
+                                    <span class="text-muted">Bilinmeyen</span>
+                                {% endif %}
+                            </td>
+                            <td>{{ report.timestamp|date:"d.m.Y H:i:s" }}</td>
+                            <td>{{ report.location|default:"-" }}</td>
                             <td>
                                 {% if report.is_equipped %}
                                     <span class="badge bg-success">Ekipmanlı</span>
@@ -37,15 +55,34 @@
                                     <span class="badge bg-danger">Ekipmansız</span>
                                 {% endif %}
                             </td>
+                            <td>{{ report.missing_equipment|default:"Yok" }}</td>
                             <td>
-                                <a href="{% url 'report_detail' report.id %}" class="btn btn-sm btn-info">
-                                    <i class="fas fa-eye">Görüntüle</i>
+                                {# Görsel Butonu #}
+                                {% if report.image %}
+                                <a href="{{ report.image.url }}" target="_blank" class="btn btn-sm btn-outline-secondary" title="Görseli Görüntüle">
+                                    <i class="fas fa-image">Görüntüle</i>
                                 </a>
+                                {% else %}
+                                -
+                                {% endif %}
+                            </td>
+                            <td>
+                                {# Görüntüle Butonu (Detay Sayfası) #}
+                                <a href="{% url 'report_detail' report.id %}" class="btn btn-sm btn-info me-1" title="Detayları Görüntüle">
+                                    <i class="fas fa-eye"></i> Detay
+                                </a>
+                                {# Silme Butonu (Form ile) #}
+                                <form action="{% url 'report_delete' report.id %}" method="post" class="d-inline" onsubmit="return confirm('Bu raporu silmek istediğinizden emin misiniz?');">
+                                    {% csrf_token %}
+                                    <button type="submit" class="btn btn-sm btn-danger" title="Sil">
+                                        <i class="fas fa-trash">Sil</i>
+                                    </button>
+                                </form>
                             </td>
                         </tr>
                         {% empty %}
                         <tr>
-                            <td colspan="5" class="text-center">Henüz rapor bulunmamaktadır.</td>
+                            <td colspan="7" class="text-center">Henüz rapor bulunmamaktadır.</td>
                         </tr>
                         {% endfor %}
                     </tbody>

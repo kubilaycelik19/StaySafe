@@ -22,6 +22,7 @@ from django.utils import timezone # Zaman dilimi için
 from datetime import timedelta # Zaman farkı hesaplamak için
 from django.db.models.functions import TruncDate, Concat # Tarihe göre gruplamak için, Concat eklendi
 from django.db.models import Count, F, Value # F ve Value eklendi
+from django.contrib.auth.decorators import login_required # login_required import et
 
 # ArcFace için eklenenler
 import torch.nn as nn
@@ -1031,7 +1032,7 @@ def index(request):
      }
      return render(request, 'display/index.html', context)
 
-@check_app_status
+@login_required # Bu view sadece giriş yapmış kullanıcılar için
 def home(request):
     """Dashboard sayfasını gösterir."""
     app_ready = stay_safe_app is not None
