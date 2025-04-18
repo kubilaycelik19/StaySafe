@@ -22,6 +22,9 @@
                             <p><strong>Sicil No:</strong> {{ report.employee.sicil_no }}</p>
                         {% endif %}
                         <p><strong>Yaş:</strong> {{ report.employee.age }}</p>
+                        <p><strong>Pozisyon:</strong> {{ report.employee.pozisyon }}</p>
+                        <p><strong>Vardiya:</strong> {{ report.employee.vardiya }}</p>
+                        <p><strong>Vardiya Müdürü:</strong> {{ report.employee.vardiya.vardiya_supervizor.name }} {{ report.employee.vardiya.vardiya_supervizor.surname }} </p>
                     {% else %}
                         <p class="text-muted">Bu rapor belirli bir çalışanla ilişkilendirilmemiş.</p>
                     {% endif %}

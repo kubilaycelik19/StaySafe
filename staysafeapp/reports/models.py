@@ -10,10 +10,20 @@ class EmployeeReport(models.Model):
     notes = models.TextField(blank=True)
     missing_equipment = models.TextField(blank=True, verbose_name="Eksik Ekipmanlar")
 
+    # Rapor anındaki durumu kaydetmek için eklenen denormalize alanlar
+    reported_pozisyon = models.CharField(max_length=100, null=True, blank=True, verbose_name="Rapor Anındaki Pozisyon")
+    reported_vardiya = models.CharField(max_length=50, null=True, blank=True, verbose_name="Rapor Anındaki Vardiya")
+    reported_supervizor_name = models.CharField(max_length=200, null=True, blank=True, verbose_name="Rapor Anındaki Süpervizör")
+
     class Meta:
         ordering = ['-timestamp']
         verbose_name = 'Çalışan Raporu'
         verbose_name_plural = 'Çalışan Raporları'
 
     def __str__(self):
-        return f"{self.employee.name} {self.employee.surname} - {self.timestamp}" 
+        # Tarih ve saat formatını gün/ay/yıl saat:dakika:saniye olarak ayarla
+        formatted_timestamp = self.timestamp.strftime('%d/%m/%Y %H:%M:%S')
+        if self.employee:
+            return f"{self.employee.name} {self.employee.surname} - {formatted_timestamp}"
+        else:
+            return f"Bilinmeyen Çalışan Raporu - {formatted_timestamp}" 

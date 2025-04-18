@@ -1,5 +1,296 @@
-{% include "layout.html" %}
+{% extends "layout.html" %}
+{% load static %}
 
-<div class="container">
-    <h1>Dashboard</h1>
+{% block page_title %}Dashboard{% endblock %}
+
+{% block css_files %}
+    {{ block.super }} {# Üst bloktaki CSS'leri dahil et #}
+    {# Gerekirse ek CSS dosyaları buraya eklenebilir #}
+    <style>
+        .icon-circle {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            margin-right: 15px;
+            color: white;
+        }
+        .bg-primary-light {
+            background-color: #cfe2ff;
+        }
+        .bg-success-light {
+            background-color: #d1e7dd;
+        }
+        .card-link {
+            text-decoration: none;
+            color: inherit;
+        }
+        .card-link:hover .card {
+            transform: translateY(-3px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+    </style>
+{% endblock css_files %}
+
+{% block content %}
+<div class="container-fluid mt-4">
+
+    {% if error_message %}
+        <div class="alert alert-danger">{{ error_message }}</div>
+    {% endif %}
+
+    {% if app_ready %}
+    {# Üst Sıra: Özet Kartlar #}
+    <div class="row mb-4">
+        <div class="col-md-6 col-lg-4 mb-3">
+            <div class="card border-left-primary shadow h-100 py-2">
+                <div class="card-body">
+                    <div class="row no-gutters align-items-center">
+                        <div class="col mr-2">
+                            <div class="text-xs font-weight-bold text-primary text-uppercase mb-1">
+                                Toplam Rapor Sayısı</div>
+                            <div class="h5 mb-0 font-weight-bold text-gray-800">{{ total_reports }}</div>
+                        </div>
+                        <div class="col-auto">
+                            <i class="fas fa-clipboard-list fa-2x text-gray-300"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-md-6 col-lg-4 mb-3">
+            <div class="card border-left-success shadow h-100 py-2">
+                <div class="card-body">
+                    <div class="row no-gutters align-items-center">
+                        <div class="col mr-2">
+                            <div class="text-xs font-weight-bold text-success text-uppercase mb-1">
+                                Bugün Oluşturulan Raporlar</div>
+                            <div class="h5 mb-0 font-weight-bold text-gray-800">{{ today_reports }}</div>
+                        </div>
+                        <div class="col-auto">
+                            <i class="fas fa-calendar-day fa-2x text-gray-300"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        {# Buraya başka bir özet kartı eklenebilir #}
+        <div class="col-md-6 col-lg-4 mb-3">
+            <div class="card border-left-warning shadow h-100 py-2">
+                <div class="card-body">
+                    <div class="row no-gutters align-items-center">
+                        <div class="col mr-2">
+                            <div class="text-xs font-weight-bold text-warning text-uppercase mb-1">
+                                Aktif Kamera Durumu</div>
+                            <div class="h5 mb-0 font-weight-bold text-gray-800">
+                                {% if camera_is_active %} Aktif {% else %} Kapalı {% endif %}
+                            </div>
+                        </div>
+                        <div class="col-auto">
+                            <i class="fas {% if camera_is_active %}fa-video{% else %}fa-video-slash{% endif %} fa-2x text-gray-300"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    {# İkinci Sıra: Grafik ve Son Raporlar #}
+    <div class="row">
+
+        {# Grafik Alanı #}
+        <div class="col-lg-7 mb-4">
+            <div class="card shadow mb-4">
+                <div class="card-header py-3 d-flex flex-row align-items-center justify-content-between bg-warning">
+                    <h6 class="m-0 font-weight-bold text-dark"><i class="fas fa-chart-bar me-2"></i>Günlük Rapor Sayısı (Son 7 Gün)</h6>
+                </div>
+                <div class="card-body">
+                    <div class="chart-area">
+                        <canvas id="reportsChart"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        {# Son Raporlar Alanı #}
+        <div class="col-lg-5 mb-4">
+            <div class="card shadow mb-4">
+                <div class="card-header py-3 bg-warning">
+                    <h6 class="m-0 font-weight-bold text-dark"><i class="fas fa-history me-2"></i>Son Raporlar</h6>
+                </div>
+                <div class="card-body">
+                    {% if recent_reports %}
+                        <ul class="list-group list-group-flush">
+                            {% for report in recent_reports %}
+                            <li class="list-group-item d-flex justify-content-between align-items-center">
+                                <div>
+                                    <small class="d-block text-muted">{{ report.timestamp|date:"d M Y H:i" }}</small>
+                                    {% if report.employee %}
+                                        <strong>{{ report.employee.name }} {{ report.employee.surname }}</strong>
+                                    {% else %}
+                                        <strong class="text-danger">Bilinmeyen Çalışan</strong>
+                                    {% endif %}
+                                    <small class="d-block text-danger">Eksik: {{ report.missing_equipment|default:"Yok" }}</small>
+                                </div>
+                                {% if report.image %}
+                                <a href="{{ report.image.url }}" target="_blank" class="badge bg-secondary rounded-pill">Görsel</a>
+                                {% endif %}
+                            </li>
+                            {% endfor %}
+                        </ul>
+                    {% else %}
+                        <p class="text-center text-muted">Henüz rapor bulunmuyor.</p>
+                    {% endif %}
+                    <div class="text-center mt-3">
+                        <a href="{% url 'report_list' %}" class="btn btn-outline-warning btn-sm">Tüm Raporları Gör <i class="fas fa-arrow-right ms-1"></i></a>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </div> {# End of second row #}
+
+    {# Üçüncü Sıra: Çalışan Bazlı Grafik #}
+    <div class="row">
+        <div class="col-lg-6 mb-4"> {# Sol tarafa, yarım genişlik #}
+            <div class="card shadow mb-4">
+                <div class="card-header py-3 bg-warning">
+                    <h6 class="m-0 font-weight-bold text-dark"><i class="fas fa-pie-chart me-2"></i>En Çok Rapor Alan Çalışanlar (Top 5)</h6>
+                </div>
+                <div class="card-body">
+                    {% if employee_chart_labels and employee_chart_data %}
+                        <div class="chart-pie pt-4 pb-2">
+                            <canvas id="employeeReportsChart"></canvas>
+                        </div>
+                    {% else %}
+                        <p class="text-center text-muted mt-3">Çalışan rapor verisi bulunamadı.</p>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+        {# Sağ tarafa başka bir kart/grafik eklenebilir #}
+        <div class="col-lg-6 mb-4">
+             {# Boş veya başka bir içerik #}
+        </div>
+    </div> {# End of third row #}
+
+    {% endif %}
+
 </div>
+{% endblock %}
+
+{% block js_files %}
+    {{ block.super }}
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+    {% if app_ready %}
+        {# Günlük Rapor Grafiği (Mevcut) #}
+        {% if chart_labels and chart_data %}
+        <script>
+          document.addEventListener('DOMContentLoaded', function() {
+            const ctxDaily = document.getElementById('reportsChart');
+            if (ctxDaily) {
+                ctxDaily.getContext('2d');
+                const reportsChart = new Chart(ctxDaily, {
+                    type: 'bar', // 'line' olarak da değiştirilebilir
+                    data: {
+                    labels: {{ chart_labels|safe }},
+                    datasets: [{
+                        label: 'Günlük Rapor Sayısı',
+                        data: {{ chart_data|safe }},
+                        backgroundColor: 'rgba(255, 193, 7, 0.6)', // Bootstrap Warning rengine benzer
+                        borderColor: 'rgba(255, 193, 7, 1)',
+                        borderWidth: 1,
+                        hoverBackgroundColor: 'rgba(255, 193, 7, 0.8)',
+                    }]
+                    },
+                    options: {
+                        maintainAspectRatio: false,
+                        responsive: true,
+                        scales: {
+                            y: {
+                                beginAtZero: true,
+                                ticks: {
+                                    precision: 0 // Y ekseninde sadece tam sayıları göster
+                                }
+                            }
+                        },
+                        plugins: {
+                            legend: {
+                                display: false // Grafik üzerindeki etiketi gizle (başlıkta var)
+                            }
+                        }
+                    }
+                });
+            }
+          });
+        </script>
+        {% endif %}
+
+        {# Yeni: Çalışan Bazlı Pasta Grafik #}
+        {% if employee_chart_labels and employee_chart_data %}
+        <script>
+          document.addEventListener('DOMContentLoaded', function() {
+            const ctxEmployee = document.getElementById('employeeReportsChart');
+            if (ctxEmployee) {
+                ctxEmployee.getContext('2d');
+                const employeeReportsChart = new Chart(ctxEmployee, {
+                    type: 'pie', // Pasta grafik
+                    data: {
+                        labels: {{ employee_chart_labels|safe }},
+                        datasets: [{
+                            data: {{ employee_chart_data|safe }},
+                            // Farklı renkler tanımlayalım
+                            backgroundColor: [
+                                'rgba(255, 99, 132, 0.7)', // Kırmızımsı
+                                'rgba(54, 162, 235, 0.7)', // Mavi
+                                'rgba(255, 206, 86, 0.7)', // Sarı
+                                'rgba(75, 192, 192, 0.7)', // Yeşilimsi Mavi
+                                'rgba(153, 102, 255, 0.7)' // Mor
+                            ],
+                            borderColor: [
+                                'rgba(255, 99, 132, 1)',
+                                'rgba(54, 162, 235, 1)',
+                                'rgba(255, 206, 86, 1)',
+                                'rgba(75, 192, 192, 1)',
+                                'rgba(153, 102, 255, 1)'
+                            ],
+                            borderWidth: 1
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: {
+                                position: 'top', // Etiketleri üste al
+                            },
+                            tooltip: {
+                                callbacks: {
+                                    label: function(context) {
+                                        let label = context.label || '';
+                                        if (label) {
+                                            label += ': ';
+                                        }
+                                        if (context.parsed !== null) {
+                                            label += context.parsed + ' rapor';
+                                        }
+                                        return label;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+          });
+        </script>
+        {% endif %}
+    {% endif %}
+{% endblock js_files %}

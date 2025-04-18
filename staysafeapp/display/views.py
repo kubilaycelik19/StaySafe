@@ -18,6 +18,10 @@ from django.views.decorators.csrf import csrf_exempt
 from django.core.files.base import ContentFile # Rapor görüntüsü kaydetmek için
 from django.core.files.storage import default_storage # Dosya işlemleri için
 from reports.models import EmployeeReport # Rapor modelini import et
+from django.utils import timezone # Zaman dilimi için
+from datetime import timedelta # Zaman farkı hesaplamak için
+from django.db.models.functions import TruncDate, Concat # Tarihe göre gruplamak için, Concat eklendi
+from django.db.models import Count, F, Value # F ve Value eklendi
 
 # ArcFace için eklenenler
 import torch.nn as nn
@@ -566,13 +570,33 @@ class StaySafeApp:
             # Eksik ekipman listesini metne çevir
             missing_equipment_str = ", ".join(missing_equipment_list) if missing_equipment_list else "Yok"
 
-            # Raporu oluştur
+            # Rapor anındaki bilgileri almak için değişkenler
+            pozisyon_adi = None
+            vardiya_tipi = None
+            supervizor_adi = None
+
+            if employee_instance:
+                try:
+                    if employee_instance.pozisyon:
+                        pozisyon_adi = employee_instance.pozisyon.pozisyon_ad
+                    if employee_instance.vardiya:
+                        vardiya_tipi = employee_instance.vardiya.get_vardiya_type_display()
+                        if employee_instance.vardiya.vardiya_supervizor:
+                            sup = employee_instance.vardiya.vardiya_supervizor
+                            supervizor_adi = f"{sup.name} {sup.surname}"
+                except Exception as info_err:
+                    logger.warning(f"Rapor için ek çalışan bilgileri (pozisyon/vardiya/süpervizör) alınırken hata: {info_err}")
+
+            # Raporu oluştur ve ek bilgileri ata
             report = EmployeeReport(
                 employee=employee_instance,
-                is_equipped=False, # Rapor ekipmansızlık durumu için
+                is_equipped=False,
                 image=image_content,
-                location="Kamera Görüntüsü", # Varsayılan konum
-                missing_equipment=missing_equipment_str # Eksik ekipmanları kaydet
+                location="Kamera Görüntüsü",
+                missing_equipment=missing_equipment_str,
+                reported_pozisyon=pozisyon_adi,
+                reported_vardiya=vardiya_tipi,
+                reported_supervizor_name=supervizor_adi
             )
             report.save()
             logger.info(f"Güvenlik raporu başarıyla kaydedildi: ID={report.id}, Çalışan={employee_instance}")
@@ -803,7 +827,7 @@ class StaySafeApp:
                  is_reported = tracker_entry.get('reported', False)
                  cooldown_active = is_reported and (current_time - last_report_time <= report_cooldown)
 
-                 # Silme koşullarını gözden geçirelim:
+                 # Silme koşulları
                  # 1. Raporlanmadıysa ve uzun süre (delay*2) görülmediyse sil
                  if not is_reported and time_since_last_seen > self.report_delay * 2:
                      logger.debug(f"Takipteki {stale_id} uzun süredir görülmedi (raporlanmadı), takipten çıkarılıyor.")
@@ -1007,9 +1031,73 @@ def index(request):
      }
      return render(request, 'display/index.html', context)
 
-# @check_app_status # home için gerekli değil gibi
+@check_app_status
 def home(request):
-    return render(request, 'display/home.html')
+    """Dashboard sayfasını gösterir."""
+    app_ready = stay_safe_app is not None
+    context = {
+        'app_ready': app_ready,
+        'error_message': None if app_ready else "Uygulama başlatılamadı. Lütfen kayıtları kontrol edin."
+    }
+
+    if not app_ready:
+        return render(request, 'display/home.html', context)
+
+    # Dashboard verilerini hazırla
+    today = timezone.now().date()
+    seven_days_ago = today - timedelta(days=6) # Son 7 günü kapsa
+
+    # Özet Kartlar için Veriler
+    total_reports = EmployeeReport.objects.count()
+    today_reports = EmployeeReport.objects.filter(timestamp__date=today).count()
+    # Buraya başka özet istatistikler eklenebilir (örn: en çok raporlanan çalışan vs.)
+
+    # Grafik için Veriler (Son 7 gün)
+    reports_per_day = EmployeeReport.objects.filter(timestamp__date__gte=seven_days_ago)\
+                                         .annotate(day=TruncDate('timestamp'))\
+                                         .values('day')\
+                                         .annotate(count=Count('id'))\
+                                         .order_by('day')
+
+    # Grafik için etiketleri ve verileri hazırla
+    # Son 7 günün tamamını göstermek için (rapor olmayan günler dahil)
+    chart_labels = []
+    chart_data = []
+    report_counts_dict = {r['day']: r['count'] for r in reports_per_day}
+
+    for i in range(7):
+        current_day = seven_days_ago + timedelta(days=i)
+        chart_labels.append(current_day.strftime('%d %b')) # Örn: 25 May
+        chart_data.append(report_counts_dict.get(current_day, 0))
+
+    # --- Yeni: Çalışan Bazlı Grafik Verileri (Top 5) ---
+    employee_reports_top5 = EmployeeReport.objects.filter(employee__isnull=False)\
+                                            .values('employee__name', 'employee__surname')\
+                                            .annotate(
+                                                full_name=Concat(F('employee__name'), Value(' '), F('employee__surname')),
+                                                report_count=Count('id')
+                                            )\
+                                            .order_by('-report_count')[:5]
+
+    employee_chart_labels = [item['full_name'] for item in employee_reports_top5]
+    employee_chart_data = [item['report_count'] for item in employee_reports_top5]
+    # --------------------------------------------------
+
+    # Son Raporlar Listesi
+    recent_reports = EmployeeReport.objects.all()[:5]
+
+    context.update({
+        'total_reports': total_reports,
+        'today_reports': today_reports,
+        'chart_labels': json.dumps(chart_labels),
+        'chart_data': json.dumps(chart_data),
+        'recent_reports': recent_reports,
+        # Yeni eklenen context değişkenleri
+        'employee_chart_labels': json.dumps(employee_chart_labels),
+        'employee_chart_data': json.dumps(employee_chart_data),
+    })
+
+    return render(request, 'display/home.html', context)
 
 @check_app_status
 def video_feed(request):
