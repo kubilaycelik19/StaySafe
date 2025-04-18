@@ -30,7 +30,8 @@ logger = logging.getLogger(__name__)
 
 # --- Yüz Tanıma Yöntemi Seçimi ---
 # Değerler: 'lbph' veya 'arcface'
-FACE_RECOGNITION_METHOD = input('Yüz tanıma yöntemi seçin (lbph/arcface): ')
+#FACE_RECOGNITION_METHOD = input('Yüz tanıma yöntemi seçin (lbph/arcface): ')
+FACE_RECOGNITION_METHOD = 'arcface'
 logger.info(f"Kullanılacak yüz tanıma yöntemi: {FACE_RECOGNITION_METHOD}")
 
 
@@ -486,6 +487,7 @@ class StaySafeApp:
         self.worker_info_cache = {} # Çalışan bilgilerini cache'le
         self.unsafe_persons_tracker = {} # Ekipmansız kişileri takip etmek için {person_id: {'timestamp': float, 'reported': bool, 'last_seen_frame': np.ndarray}}
         self.report_delay = REPORT_DELAY # Raporlama gecikmesi
+        self._toggle_lock = threading.Lock() # Toggle işlemi için kilit
 
 
     def create_yolo_model(self):
@@ -728,15 +730,69 @@ class StaySafeApp:
                         elif time_elapsed > 1:
                             person_status_text += f" ({int(time_elapsed)}s)" # Kaç sn güvensiz
 
-                # --- Çizim --- 
+                # --- Çizim ---
                 cv2.rectangle(frame, (x1, y1), (x2, y2), box_color, 2)
                 (text_width, text_height), baseline = cv2.getTextSize(person_status_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
-                text_y = y1 - 10 if y1 - 10 > text_height else y1 + text_height + 5
-                # Arka plan ekleyelim
-                cv2.rectangle(frame, (x1, text_y - text_height - baseline), (x1 + text_width, text_y + baseline), (0,0,0), -1)
-                cv2.putText(frame, person_status_text, (x1, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, box_color, 2)
+                text_y_status = y1 - 10 if y1 - 10 > text_height else y1 + text_height + 5
+                # Ana durum metni için arka plan
+                cv2.rectangle(frame, (x1, text_y_status - text_height - baseline), (x1 + text_width, text_y_status + baseline), (0,0,0), -1)
+                cv2.putText(frame, person_status_text, (x1, text_y_status), cv2.FONT_HERSHEY_SIMPLEX, 0.6, box_color, 2)
 
-            # --- Takipçi Temizliği --- 
+                # --- Ekipman Etiketlerini Belirle ---
+                missing_items = []
+                equipped_items = []
+                if not has_helmet: missing_items.append("BARET")
+                else: equipped_items.append("BARET")
+                if not has_vest: missing_items.append("YELEK")
+                else: equipped_items.append("YELEK")
+
+                label_font_scale = 0.5
+                label_thickness = 1
+                label_padding = 5
+
+                # --- Eksik Ekipman Etiketlerini Çiz (Kırmızı, Sağ Taraf) ---
+                if not is_safe:
+                    label_y_offset_right = text_height + 10 # Ana metnin biraz altına
+                    label_margin_x_right = 10 # Kutunun sağına olan boşluk
+
+                    for item_text in missing_items:
+                        (label_w, label_h), label_bl = cv2.getTextSize(item_text, cv2.FONT_HERSHEY_SIMPLEX, label_font_scale, label_thickness)
+                        rect_x1 = x2 + label_margin_x_right
+                        rect_y1 = y1 + label_y_offset_right
+                        rect_x2 = rect_x1 + label_w + 2 * label_padding
+                        rect_y2 = rect_y1 + label_h + 2 * label_padding
+                        # Sınır kontrolü (frame dışına taşmasın)
+                        if rect_x2 < w_frame and rect_y2 < h_frame:
+                            cv2.rectangle(frame, (rect_x1, rect_y1), (rect_x2, rect_y2), (0, 0, 255), -1) # Kırmızı
+                            text_x = rect_x1 + label_padding
+                            text_y_label = rect_y1 + label_h + label_padding
+                            cv2.putText(frame, item_text, (text_x, text_y_label), cv2.FONT_HERSHEY_SIMPLEX, label_font_scale, (255, 255, 255), label_thickness)
+                        label_y_offset_right += label_h + 2 * label_padding + 5
+
+                # --- Takılı Ekipman Etiketlerini Çiz (Yeşil, Sol Taraf) ---
+                label_y_offset_left = text_height + 10 # Ana metnin biraz altına
+                label_margin_x_left = 10 # Kutunun soluna olan boşluk
+
+                for item_text in equipped_items:
+                    (label_w, label_h), label_bl = cv2.getTextSize(item_text, cv2.FONT_HERSHEY_SIMPLEX, label_font_scale, label_thickness)
+                    # Etiket pozisyonu (kutunun soluna)
+                    rect_x2 = x1 - label_margin_x_left
+                    rect_y1 = y1 + label_y_offset_left
+                    rect_x1 = rect_x2 - label_w - 2 * label_padding
+                    rect_y2 = rect_y1 + label_h + 2 * label_padding
+
+                    # Sınır kontrolü (frame dışına taşmasın)
+                    if rect_x1 > 0 and rect_y2 < h_frame:
+                        # Yeşil arka plan
+                        cv2.rectangle(frame, (rect_x1, rect_y1), (rect_x2, rect_y2), (0, 255, 0), -1) # Yeşil
+                        # Siyah yazı
+                        text_x = rect_x1 + label_padding
+                        text_y_label = rect_y1 + label_h + label_padding
+                        cv2.putText(frame, item_text, (text_x, text_y_label), cv2.FONT_HERSHEY_SIMPLEX, label_font_scale, (0, 0, 0), label_thickness)
+                    # Bir sonraki etiket için y offset'i artır
+                    label_y_offset_left += label_h + 2 * label_padding + 5
+
+            # --- Takipçi Temizliği ---
             # Bu frame'de görülmeyen ama hala takipte olanları kontrol et
             stale_ids = set(self.unsafe_persons_tracker.keys()) - processed_person_ids
             for stale_id in stale_ids:
@@ -769,41 +825,48 @@ class StaySafeApp:
 
     def toggle_camera(self):
         """Kamerayı ve ilgili işlemleri açıp kapatır."""
-        try:
-            if self.camera_active:
-                logger.info("Kamera kapatılıyor...")
-                self.frame_processor.stop()
-                self.face_recognizer.release_camera()
-                self.camera_active = False
-                self.predicted_names = []
-                self.worker_info_cache = {}
-                self.unsafe_persons_tracker.clear() # Kapatırken takip listesini temizle
-                logger.info("Kamera ve frame işleyici başarıyla durduruldu.")
-                return False
-            else:
-                # Kamerayı başlat
-                logger.info("Kamera başlatılıyor...")
-                if not self.face_recognizer.initialize_camera():
-                     logger.error("Kamera başlatılamadı.")
-                     self.camera_active = False # Başlatılamazsa durumu false yap
-                     return False # Başlatılamadığını belirt
-
-                 # Kamera başarılıysa Frame işlemciyi başlat
-                self.frame_processor.start()
-                self.camera_active = True
-                logger.info("Kamera ve frame işleyici başarıyla başlatıldı.")
-                return True
-        except Exception as e:
-            logger.error(f"Kamera durumu değiştirilirken hata: {e}", exc_info=True)
-            # Hata durumunda kaynakları serbest bırakmaya çalışalım
+        with self._toggle_lock: # Kilidi al (Blok sonuna kadar tutar)
             try:
-                self.frame_processor.stop()
-                self.face_recognizer.release_camera()
-            except Exception as cleanup_err:
-                 logger.error(f"Hata sonrası temizlik sırasında ek hata: {cleanup_err}")
-            self.camera_active = False # Hata durumunda kapalı olarak işaretle
-            self.unsafe_persons_tracker.clear() # Hata durumunda da temizle
-            raise Exception(f"Kamera durumu değiştirilemedi: {str(e)}") # Hatayı yukarıya ilet
+                if self.camera_active:
+                    logger.info("Kamera kapatma işlemi başlıyor...")
+                    logger.info("FrameProcessor durduruluyor...")
+                    self.frame_processor.stop()
+                    logger.info("Kamera serbest bırakılıyor...")
+                    self.face_recognizer.release_camera()
+                    self.camera_active = False
+                    self.predicted_names = []
+                    self.worker_info_cache = {}
+                    self.unsafe_persons_tracker.clear()
+                    logger.info("Kamera ve frame işleyici başarıyla durduruldu.")
+                    return False
+                else:
+                    logger.info("Kamera başlatma işlemi başlıyor...")
+                    logger.info("face_recognizer.initialize_camera() çağrılıyor...")
+                    init_success = self.face_recognizer.initialize_camera()
+                    if not init_success:
+                        logger.error("Kamera başlatılamadı (initialize_camera başarısız).")
+                        self.camera_active = False # Durumun False olduğundan emin ol
+                        return False
+
+                    logger.info("Kamera başarıyla başlatıldı. FrameProcessor başlatılıyor...")
+                    self.frame_processor.start()
+                    self.camera_active = True
+                    logger.info("Kamera ve frame işleyici başarıyla başlatıldı.")
+                    return True
+            except Exception as e:
+                logger.error(f"Kamera durumu değiştirilirken hata: {e}", exc_info=True)
+                # Hata durumunda kaynakları serbest bırakmaya çalışalım
+                try:
+                    logger.warning("Hata nedeniyle kaynaklar temizleniyor...")
+                    if hasattr(self, 'frame_processor') and self.frame_processor.running:
+                        self.frame_processor.stop()
+                    if hasattr(self, 'face_recognizer'):
+                        self.face_recognizer.release_camera()
+                except Exception as cleanup_err:
+                    logger.error(f"Hata sonrası temizlik sırasında ek hata: {cleanup_err}")
+                self.camera_active = False # Hata durumunda kapalı olarak işaretle
+                self.unsafe_persons_tracker.clear()
+                raise Exception(f"Kamera durumu değiştirilemedi: {str(e)}") # Hatayı view'a ilet
 
 
     def get_video_stream(self, recognition=False):
@@ -820,54 +883,47 @@ class StaySafeApp:
                        b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
             return # Akışı sonlandır
 
-        logger.info("Video akışı başlıyor...")
+        logger.info("Video akış döngüsü başlıyor...")
         cap = self.face_recognizer.cam
+        sent_camera_off_frame = False # Flag to send the off frame only once
 
         while self.camera_active: # Döngü kontrolü
             # 1. Kameradan Frame Oku
             ret, frame = cap.read()
             if not ret:
-                logger.warning("Kameradan frame okunamadı. Akış durduruluyor.")
-                # Belki yeniden başlatmayı denemek yerine akışı durdurmak daha iyi
-                self.toggle_camera() # Kamerayı kapatmayı dene
-                break # Döngüden çık
+                logger.warning("Kameradan frame okunamadı. Sonraki frame deneniyor...")
+                time.sleep(0.1) # Kısa bir süre bekle
+                continue # Döngünün başına dön, sonraki frame'i dene
 
             frame = cv2.flip(frame, 1) # Görüntüyü aynala
 
             # 2. Frame'i İşleme Kuyruğuna Gönder
             try:
-                self.frame_queue.put_nowait(frame) # Bloklamayan put
+                self.frame_queue.put_nowait(frame)
             except queue.Full:
-                # Kuyruk doluysa en eskiyi atıp yeniyi ekleyelim (canlılık önemliyse)
                  try:
-                    self.frame_queue.get_nowait() # Eski frame'i at
-                    self.frame_queue.put_nowait(frame) # Yeni frame'i ekle
-                    # logger.debug("Frame kuyruğu doluydu, eski frame atıldı.")
-                 except queue.Empty: pass # Boşsa sorun yok
-                 except queue.Full: # Tekrar doluysa (çok hızlı frame geliyorsa)
+                    self.frame_queue.get_nowait()
+                    self.frame_queue.put_nowait(frame)
+                 except queue.Empty: pass
+                 except queue.Full:
                      logger.warning("Frame kuyruğu anlık olarak çok dolu, frame atlanıyor.")
-                     pass # Bu frame'i atla
+                     pass
 
             # 3. İşlenmiş Sonucu Al
             try:
-                # Timeout ile al, result yoksa takılma
                 processed_frame, results = self.result_queue.get(timeout=0.5)
 
                 # 4. Sonuçları İşle ve Görüntüyü Hazırla
                 if recognition and processed_frame is not None:
-                     # Nesne tespiti ve yüz tanımayı içeren işlem
                      output_frame = self.process_detection_results(processed_frame, results)
                 elif processed_frame is not None:
-                     # Sadece frame'i göster (recognition=False ise veya result yoksa)
                      output_frame = processed_frame
                 else:
-                     # Hata veya boş sonuç durumunda orijinal frame'i kullan (veya hata mesajı ekle)
-                     output_frame = frame # Hata durumunda orijinal frame'i gönderelim
+                     output_frame = frame
                      cv2.putText(output_frame, "Processing Issue", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,0,255), 2)
 
-
                 # 5. Frame'i JPEG'e Çevir ve Gönder
-                ret_encode, buffer = cv2.imencode('.jpg', output_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85]) # Kaliteyi düşürelim
+                ret_encode, buffer = cv2.imencode('.jpg', output_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
                 if ret_encode:
                     frame_bytes = buffer.tobytes()
                     yield (b'--frame\r\n'
@@ -876,17 +932,32 @@ class StaySafeApp:
                     logger.warning("Frame JPEG formatına dönüştürülemedi.")
 
             except queue.Empty:
-                # Sonuç kuyruğu boşsa, bir süre bekle ve devam et
-                # logger.debug("Sonuç kuyruğu boş, bekleniyor...")
-                time.sleep(0.02) # CPU'yu yormamak için küçük bir bekleme
+                time.sleep(0.02)
                 continue
             except Exception as e:
                  logger.error(f"Video akışı ana döngü hatası: {e}", exc_info=True)
                  # Hata durumunda döngüyü kırmak iyi olabilir
                  break # Döngüyü sonlandır
 
-        logger.info("Video akış döngüsü sona erdi.")
-        # Kamera kapalıysa veya hata oluştuysa toggle_camera zaten kaynakları temizlemiş olmalı
+        # Döngü bitti (self.camera_active False oldu veya hata oluştu)
+        logger.info("Video akış döngüsü sona erdi veya kamera kapatıldı.")
+
+        # Son bir "Camera Off" frame'i gönder (eğer daha önce gönderilmediyse)
+        if not sent_camera_off_frame:
+            try:
+                logger.info("Kamera kapatıldığı/döngü bittiği için son 'Camera Off' frame gönderiliyor.")
+                error_frame = np.zeros((CAMERA['height'], CAMERA['width'], 3), dtype=np.uint8)
+                cv2.putText(error_frame, "Camera Off", (int(CAMERA['width']/2)-100, int(CAMERA['height']/2)), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+                ret_encode, buffer = cv2.imencode('.jpg', error_frame)
+                if ret_encode:
+                    frame_bytes = buffer.tobytes()
+                    yield (b'--frame\r\n'
+                           b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+                    sent_camera_off_frame = True # Gönderildi olarak işaretle
+                else:
+                     logger.warning("Kapanış frame'i JPEG formatına dönüştürülemedi.")
+            except Exception as e:
+                 logger.error(f"Kapanış frame'i gönderilirken hata: {e}")
 
 
 # --- Global StaySafeApp Nesnesi ---
