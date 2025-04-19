@@ -42,7 +42,7 @@ INSTALLED_APPS = [
     'display',
     'employees',
     'reports',
-    'faceRecognition_train',
+    'account',
 ]
 
 MIDDLEWARE = [
@@ -146,8 +146,3 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 # Media files
 MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
-
-# Kimlik Doğrulama Ayarları
-LOGIN_URL = '/accounts/login/' # @login_required'ın yönlendireceği URL
-LOGIN_REDIRECT_URL = '/'      # Başarılı giriş sonrası yönlendirilecek varsayılan URL (ana sayfa)
-LOGOUT_REDIRECT_URL = '/accounts/login/' # Başarılı çıkış sonrası yönlendirilecek URL

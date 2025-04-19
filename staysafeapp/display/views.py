@@ -8,9 +8,7 @@ import queue
 import threading
 import time
 import json
-# import sqlite3 # Kaldırıldı
 import warnings
-# from imutils.video import FPS # FPS kullanılmıyor gibi, kaldırılabilir
 from ultralytics import YOLO
 from django.http import StreamingHttpResponse, JsonResponse
 from django.shortcuts import render
@@ -91,10 +89,10 @@ except AttributeError:
     CASCADE_PATH = os.path.join(STATIC_DIR, 'haarcascade_frontalface_default.xml') # Statik klasördeki cascade kullanılacak
 
 # ArcFace için eklenen dosya yolları
-ARCFACE_MODEL_PATH = os.path.join(MODELS_DIR, 'arcface_model.pth')
+ARCFACE_MODEL_PATH = os.path.join(MODELS_DIR, 'arcface_model_50e_0.001lr_32bs.pth')
 CLASS_NAMES_PATH = os.path.join(MODELS_DIR, 'class_names.json')
 
-REPORT_DELAY = 5 # Raporlama öncesi bekleme süresi (saniye)
+REPORT_DELAY = 10 # Raporlama öncesi bekleme süresi (saniye)
 
 # --- ArcFace Model Tanımı (faceRecognition_train/views.py'den alındı) ---
 class ArcFaceModel(nn.Module):
@@ -427,7 +425,11 @@ class FrameProcessor:
 
                 # YOLO modelini çalıştır
                 # stream=True daha verimli olabilir ama sonuçları yönetmek farklılaşır
-                results = self.model(frame_resized, verbose=False, device=stay_safe_app.device) # Cihazı belirt
+                # stream=True parametresi, YOLO'nun sonuçları daha verimli bir şekilde işlemesini sağlar.
+                # Bu parametre, özellikle video akışı gibi sürekli frame işleme durumlarında
+                # bellek kullanımını optimize eder ve performansı artırır.
+                # Ancak sonuçların yapısı farklılaşabilir, bu yüzden dikkatli kullanılmalıdır.
+                results = self.model.track(frame_resized, verbose=False, device=stay_safe_app.device) # Cihazı belirt
 
                 # Sonucu orijinal frame ile birlikte kuyruğa koy
                 # Burası kritik, eğer result_queue doluysa takılma olabilir
@@ -609,241 +611,293 @@ class StaySafeApp:
         except Exception as e:
             logger.error(f"Güvenlik raporu kaydedilirken hata: {e}", exc_info=True)
 
+    # --- process_detection_results için Yardımcı Metotlar ---
 
+    def _get_persons_from_results(self, results):
+        """YOLO sonuçlarından 'person' sınıfına ait kutuları çıkarır."""
+        persons = []
+        if results is not None and results[0].boxes is not None:
+            class_names = self.model.names
+            boxes = results[0].boxes.cpu().numpy()
+            for box in boxes:
+                try:
+                    class_id = int(box.cls[0])
+                    if class_id < len(class_names) and class_names[class_id] == 'person':
+                        persons.append(box)
+                except (IndexError, ValueError) as e:
+                    logger.warning(f"Kutu işlenirken hata (cls): {e}, Kutu: {box}")
+                    continue # Bu kutuyu atla
+        return persons
+
+    def _check_ppe_for_person(self, person_box, all_boxes, frame_shape):
+        """Belirli bir kişi kutusu içindeki kask ve yeleği kontrol eder."""
+        has_helmet = False
+        has_vest = False
+        x1, y1, x2, y2 = map(int, person_box.xyxy[0])
+        h_frame, w_frame = frame_shape[:2]
+        x1, y1 = max(0, x1), max(0, y1)
+        x2, y2 = min(w_frame, x2), min(h_frame, y2)
+
+        if x1 >= x2 or y1 >= y2: return has_helmet, has_vest # Geçersiz kutu
+
+        class_names = self.model.names
+        for other_box in all_boxes:
+            # Kendisiyle karşılaştırmayı atla
+            if np.array_equal(other_box.xyxy, person_box.xyxy): continue
+
+            try:
+                other_class_id = int(other_box.cls[0])
+                if other_class_id >= len(class_names): continue
+                other_class_name = class_names[other_class_id]
+
+                if other_class_name in ['helmet', 'vest']:
+                    ox1, oy1, ox2, oy2 = map(int, other_box.xyxy[0])
+                    # Ekipmanın merkezi kişinin kutusu içinde mi?
+                    center_x, center_y = (ox1 + ox2) / 2, (oy1 + oy2) / 2
+                    if x1 < center_x < x2 and y1 < center_y < y2:
+                        if other_class_name == 'helmet': has_helmet = True
+                        if other_class_name == 'vest': has_vest = True
+                        # İkisi de bulunduysa döngüden çıkabiliriz (optimizasyon)
+                        # if has_helmet and has_vest: break
+            except (IndexError, ValueError) as e:
+                logger.warning(f"Ekipman kontrolünde kutu işlenirken hata: {e}, Kutu: {other_box}")
+                continue
+
+        return has_helmet, has_vest
+
+    def _update_unsafe_tracker(self, person_id, is_safe, recognized_name, person_roi):
+        """Güvensiz kişi takipçisini günceller ve rapor gerekip gerekmediğini döndürür."""
+        current_time = time.time()
+        report_cooldown = 60 # Saniye
+        should_create_report = False
+        missing_equipment_list = [] # Rapor için eksik ekipman listesi
+
+        if is_safe:
+            # Güvenli hale geldiyse takipten çıkar
+            if person_id in self.unsafe_persons_tracker:
+                logger.debug(f"{person_id} güvenli hale geldi, takipten çıkarılıyor.")
+                del self.unsafe_persons_tracker[person_id]
+        else: # Güvensiz durum
+            if person_id not in self.unsafe_persons_tracker:
+                # İlk kez güvensiz görüldü, takibe al
+                logger.info(f"{person_id} güvensiz tespit edildi, takip başlatılıyor.")
+                self.unsafe_persons_tracker[person_id] = {
+                    'timestamp': current_time,
+                    'reported': False,
+                    'last_seen_frame': person_roi.copy() if person_roi is not None else None,
+                    'last_report_time': 0
+                }
+            else:
+                # Zaten takipte, süreyi ve rapor durumunu kontrol et
+                tracker_entry = self.unsafe_persons_tracker[person_id]
+                time_elapsed = current_time - tracker_entry['timestamp']
+                can_report_again = current_time - tracker_entry.get('last_report_time', 0) > report_cooldown
+
+                # Raporlama koşulları:
+                # 1. Yeterli süre geçtiyse (report_delay)
+                # 2. Henüz raporlanmadıysa VEYA raporlandı ama soğuma süresi bittiyse
+                # 3. Yüz tanındıysa (Unknown/Error değilse)
+                should_report_trigger = (time_elapsed >= self.report_delay and
+                                         (not tracker_entry['reported'] or can_report_again) and
+                                         recognized_name not in ["Unknown", "Error", None])
+
+                if should_report_trigger:
+                    logger.info(f"{person_id} ({recognized_name}) için raporlama koşulları sağlandı.")
+                    should_create_report = True
+                    # Rapor için son görülen frame'i güncelle (bu frame olabilir)
+                    if person_roi is not None: tracker_entry['last_seen_frame'] = person_roi.copy()
+                    tracker_entry['reported'] = True # Raporlanacak olarak işaretle (rapor başarılı olursa kalıcı)
+                    tracker_entry['last_report_time'] = current_time
+                    # Opsiyonel: timestamp'i sıfırlayıp delay'i tekrar başlatmak?
+                    # tracker_entry['timestamp'] = current_time
+
+                elif not tracker_entry['reported']:
+                    # Raporlanmadıysa ve rapor süresi dolmadıysa, son frame'i güncelle
+                     if person_roi is not None: tracker_entry['last_seen_frame'] = person_roi.copy()
+
+        return should_create_report, missing_equipment_list # Şimdilik missing_equipment_list boş, bunu _check_ppe_for_person'dan alacağız
+
+    def _draw_ppe_labels(self, frame, person_box, has_helmet, has_vest):
+         """Tespit edilen veya eksik KKD etiketlerini frame üzerine çizer."""
+         x1, y1, x2, y2 = map(int, person_box.xyxy[0])
+         h_frame, w_frame = frame.shape[:2]
+         label_font_scale = 0.5
+         label_thickness = 1
+         label_padding = 5
+
+         missing_items = []
+         equipped_items = []
+         if not has_helmet: missing_items.append("BARET")
+         else: equipped_items.append("BARET")
+         if not has_vest: missing_items.append("YELEK")
+         else: equipped_items.append("YELEK")
+
+         # Başlangıç Y Offset'i (ana durum metninin altına gelmesi için yaklaşık)
+         base_y_offset = 25 # Ana metin kutusunun yaklaşık yüksekliği
+
+         # --- Eksik Ekipman Etiketlerini Çiz (Kırmızı, Sağ Taraf) ---
+         current_y_offset_right = base_y_offset
+         label_margin_x_right = 10
+         for item_text in missing_items:
+             (label_w, label_h), _ = cv2.getTextSize(item_text, cv2.FONT_HERSHEY_SIMPLEX, label_font_scale, label_thickness)
+             rect_x1 = x2 + label_margin_x_right
+             rect_y1 = y1 + current_y_offset_right
+             rect_x2 = rect_x1 + label_w + 2 * label_padding
+             rect_y2 = rect_y1 + label_h + 2 * label_padding
+             if rect_x2 < w_frame and rect_y2 < h_frame:
+                 cv2.rectangle(frame, (rect_x1, rect_y1), (rect_x2, rect_y2), (0, 0, 255), -1)
+                 text_x = rect_x1 + label_padding
+                 text_y_label = rect_y1 + label_h + label_padding
+                 cv2.putText(frame, item_text, (text_x, text_y_label), cv2.FONT_HERSHEY_SIMPLEX, label_font_scale, (255, 255, 255), label_thickness)
+             current_y_offset_right += label_h + 2 * label_padding + 5
+
+         # --- Takılı Ekipman Etiketlerini Çiz (Yeşil, Sol Taraf) ---
+         current_y_offset_left = base_y_offset
+         label_margin_x_left = 10
+         for item_text in equipped_items:
+             (label_w, label_h), _ = cv2.getTextSize(item_text, cv2.FONT_HERSHEY_SIMPLEX, label_font_scale, label_thickness)
+             rect_x2 = x1 - label_margin_x_left
+             rect_y1 = y1 + current_y_offset_left
+             rect_x1 = rect_x2 - label_w - 2 * label_padding
+             rect_y2 = rect_y1 + label_h + 2 * label_padding
+             if rect_x1 > 0 and rect_y2 < h_frame:
+                 cv2.rectangle(frame, (rect_x1, rect_y1), (rect_x2, rect_y2), (0, 255, 0), -1)
+                 text_x = rect_x1 + label_padding
+                 text_y_label = rect_y1 + label_h + label_padding
+                 cv2.putText(frame, item_text, (text_x, text_y_label), cv2.FONT_HERSHEY_SIMPLEX, label_font_scale, (0, 0, 0), label_thickness)
+             current_y_offset_left += label_h + 2 * label_padding + 5
+
+    def _draw_person_status(self, frame, person_box, status_text, box_color):
+         """Kişi durum metnini ve ana sınırlayıcı kutuyu çizer."""
+         x1, y1, x2, y2 = map(int, person_box.xyxy[0])
+         cv2.rectangle(frame, (x1, y1), (x2, y2), box_color, 2)
+         (text_width, text_height), baseline = cv2.getTextSize(status_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+         text_y_status = y1 - 10 if y1 - 10 > text_height else y1 + text_height + 5
+         cv2.rectangle(frame, (x1, text_y_status - text_height - baseline), (x1 + text_width, text_y_status + baseline), (0,0,0), -1)
+         cv2.putText(frame, status_text, (x1, text_y_status), cv2.FONT_HERSHEY_SIMPLEX, 0.6, box_color, 2)
+
+    def _cleanup_stale_trackers(self, processed_person_ids):
+        """Bu frame'de görülmeyen eski takipçileri temizler."""
+        current_time = time.time()
+        report_cooldown = 60
+        stale_ids = set(self.unsafe_persons_tracker.keys()) - processed_person_ids
+        for stale_id in stale_ids:
+            tracker_entry = self.unsafe_persons_tracker[stale_id]
+            time_since_first_seen = current_time - tracker_entry['timestamp'] # İlk görüldüğü zamandan beri geçen süre
+            last_report_time = tracker_entry.get('last_report_time', 0)
+            is_reported = tracker_entry.get('reported', False)
+            cooldown_active = is_reported and (current_time - last_report_time <= report_cooldown)
+
+            # Silme koşulları:
+            # 1. Raporlanmadıysa ve uzun süre (delay*2) görülmediyse sil
+            if not is_reported and time_since_first_seen > self.report_delay * 2:
+                logger.debug(f"Takipteki {stale_id} uzun süredir görülmedi (raporlanmadı), takipten çıkarılıyor.")
+                del self.unsafe_persons_tracker[stale_id]
+            # 2. Raporlandıysa, soğuma süresi bittiyse VE uzun süre (delay*5) görülmediyse sil
+            elif is_reported and not cooldown_active and time_since_first_seen > self.report_delay * 5:
+                logger.debug(f"Raporlanan {stale_id} uzun süredir görülmedi (soğuma bitti), takipten çıkarılıyor.")
+                del self.unsafe_persons_tracker[stale_id]
+
+    # --- Ana İşleme Fonksiyonu (Refaktör Edildi) ---
     def process_detection_results(self, frame, results):
         """Tespit sonuçlarını işler, yüz tanıma yapar, raporlamayı yönetir ve frame üzerine çizer."""
         self.predicted_names = [] # Her frame için listeyi temizle
         current_time = time.time()
-        processed_person_ids = set() # Bu frame'de işlenen kişileri tutalım
-        report_cooldown = 60 # Saniye cinsinden raporlama soğuma süresi
+        processed_person_ids_in_frame = set() # Bu frame'de işlenen kişileri tutalım
 
         if results is None:
              cv2.putText(frame, "Processing Error", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,0,255), 2)
-             # Tracker'ı burada temizlemeyelim, belki geçici bir hatadır.
              return frame
 
         try:
-            class_names = self.model.names
-            boxes = results[0].boxes.cpu().numpy()
-            persons = [box for box in boxes if class_names[int(box.cls[0])] == 'person']
+            # 1. Tüm kutuları ve kişi kutularını al
+            all_boxes = results[0].boxes.cpu().numpy() if results[0].boxes is not None else []
+            person_boxes = self._get_persons_from_results(results)
 
-            if not persons:
-                 # Ekranda kimse yoksa, tüm 'unsafe' takipçilerini temizleyebiliriz (opsiyonel)
-                 # self.unsafe_persons_tracker.clear()
+            if not person_boxes:
+                 self._cleanup_stale_trackers(processed_person_ids_in_frame) # Ekranda kimse yoksa bile eski takipçileri temizle
                  return frame
 
-            # -- Sadece en büyük kişiyi değil, tüm kişileri işleyelim --
-            for person_box in persons:
+            # 2. Her kişiyi işle
+            for person_box in person_boxes:
                 x1, y1, x2, y2 = map(int, person_box.xyxy[0])
                 h_frame, w_frame = frame.shape[:2]
-                x1, y1 = max(0, x1), max(0, y1)
-                x2, y2 = min(w_frame, x2), min(h_frame, y2)
+                person_roi = frame[max(0, y1):min(h_frame, y2), max(0, x1):min(w_frame, x2)]
 
-                if x1 >= x2 or y1 >= y2: continue # Geçersiz kutu
+                if person_roi.size == 0: continue # Geçersiz ROI
 
-                has_helmet = False
-                has_vest = False
-                # Kask ve yelek kontrolü (bu person kutusu içinde)
-                for other_box in boxes:
-                    if np.array_equal(other_box.xyxy, person_box.xyxy): continue
-                    other_class_id = int(other_box.cls[0])
-                    if other_class_id >= len(class_names): continue
-                    other_class_name = class_names[other_class_id]
-
-                    if other_class_name in ['helmet', 'vest']:
-                        ox1, oy1, ox2, oy2 = map(int, other_box.xyxy[0])
-                        center_x, center_y = (ox1 + ox2) / 2, (oy1 + oy2) / 2
-                        if x1 < center_x < x2 and y1 < center_y < y2:
-                            if other_class_name == 'helmet': has_helmet = True
-                            if other_class_name == 'vest': has_vest = True
-                            # if has_helmet and has_vest: break # Optimizasyon
-
+                # 3. Ekipman Kontrolü
+                has_helmet, has_vest = self._check_ppe_for_person(person_box, all_boxes, frame.shape)
                 is_safe = has_helmet and has_vest
-                box_color = (0, 255, 0) if is_safe else (0, 0, 255)
-                status_prefix = "Safe" if is_safe else "Unsafe"
-                person_status_text = status_prefix
+
+                # 4. Yüz Tanıma (Güvensizse veya her zaman? Şimdilik güvensizse)
                 recognized_name = "Unknown"
                 confidence = 0
-
-                # Yüz tanımayı sadece güvensizse VEYA her zaman yapabiliriz?
-                # Şimdilik sadece güvensizse yapalım.
-                person_roi = frame[y1:y2, x1:x2]
-                if not is_safe and person_roi.size > 0:
+                if not is_safe:
                     recognized_name, confidence = self.face_recognizer.recognize_faces(person_roi)
-                    self.predicted_names.append(recognized_name) # Tahmin listesine ekle
-                    if recognized_name not in ["Unknown", "Error"]:
-                        person_status_text += f" ({recognized_name} - {confidence}%)"
-                    elif recognized_name == "Error":
-                        person_status_text += " (Face Rec Error)"
-                    else: # Unknown
-                        person_status_text += " (Unknown)"
-                elif person_roi.size == 0:
-                     person_status_text += " (ROI Error)"
-                     # recognized_name = "Unknown" # Zaten varsayılan Unknown
-                     self.predicted_names.append("Unknown")
-                elif is_safe:
-                    # Güvenli ise de tanıma yapıp ismi ekleyebiliriz (opsiyonel)
-                    # recognized_name, confidence = self.face_recognizer.recognize_faces(person_roi)
-                    pass # Güvenli ise status yeterli
+                    self.predicted_names.append(recognized_name)
+                else:
+                     self.predicted_names.append("Safe") # Güvenli ise özel bir değer ekleyebiliriz
 
-                # --- Raporlama Mantığı --- 
-                # Takip için benzersiz bir ID belirleyelim
-                # Tanınan isim varsa onu, yoksa kutu merkezini kullanalım (basit yaklaşım)
+                # 5. Kişi ID'sini Belirle
                 if recognized_name not in ["Unknown", "Error", None]:
                     person_id = recognized_name
                 else:
-                    # Tanınmayanlar için yaklaşık konum bazlı ID
-                    center_x = (x1 + x2) // 2
-                    center_y = (y1 + y2) // 2
-                    person_id = f"unknown_at_{center_x}_{center_y}" # Bu ID çok stabil olmayabilir
+                    center_x, center_y = (x1 + x2) // 2, (y1 + y2) // 2
+                    person_id = f"unknown_at_{center_x}_{center_y}"
 
-                processed_person_ids.add(person_id) # Bu frame'de görüldü
+                processed_person_ids_in_frame.add(person_id)
 
-                if is_safe:
-                    # Eğer kişi güvenli hale geldiyse ve takip ediliyorsa, takipten çıkar
-                    if person_id in self.unsafe_persons_tracker:
-                        logger.debug(f"{person_id} güvenli hale geldi, takipten çıkarılıyor.")
-                        del self.unsafe_persons_tracker[person_id]
-                else: # Güvensiz durum
-                    if person_id not in self.unsafe_persons_tracker:
-                        # Kişi ilk kez güvensiz görüldü, takibe al
-                        logger.info(f"{person_id} güvensiz tespit edildi, takip başlatılıyor.")
-                        self.unsafe_persons_tracker[person_id] = {
-                            'timestamp': current_time,
-                            'reported': False,
-                            'last_seen_frame': person_roi.copy(), # Rapor için ROI'yi sakla
-                            'last_report_time': 0 # İlk başta raporlanmadı
-                        }
+                # 6. Takipçiyi Güncelle ve Raporlama İhtiyacını Kontrol Et
+                should_create_report, missing_equipment_list = self._update_unsafe_tracker(person_id, is_safe, recognized_name, person_roi)
+
+                # 7. Rapor Oluştur (Gerekliyse)
+                if should_create_report:
+                    # Eksik ekipmanları tekrar belirle (raporlama anı için)
+                    missing_equipment_list_report = []
+                    if not has_helmet: missing_equipment_list_report.append("Baret")
+                    if not has_vest: missing_equipment_list_report.append("Yelek")
+
+                    last_seen_frame_for_report = self.unsafe_persons_tracker[person_id].get('last_seen_frame')
+                    if last_seen_frame_for_report is not None:
+                         self.create_safety_report(person_id, recognized_name, last_seen_frame_for_report, missing_equipment_list_report)
                     else:
-                        # Kişi zaten takipte, süreyi ve rapor durumunu kontrol et
-                        tracker_entry = self.unsafe_persons_tracker[person_id]
-                        time_elapsed = current_time - tracker_entry['timestamp']
-                        can_report_again = current_time - tracker_entry.get('last_report_time', 0) > report_cooldown
+                         logger.warning(f"{person_id} için rapor oluşturulamadı: Son frame bulunamadı.")
+                         # Başarısız olursa 'reported' flag'ini geri alabiliriz?
+                         self.unsafe_persons_tracker[person_id]['reported'] = False
+                         self.unsafe_persons_tracker[person_id]['last_report_time'] = 0
 
-                        # Süre dolduysa VE henüz raporlanmadıysa VEYA raporlandı ama soğuma süresi bittiyse VE yüz tanındıysa rapor oluştur
-                        should_report = (time_elapsed >= self.report_delay and
-                                         (not tracker_entry['reported'] or can_report_again) and
-                                         recognized_name not in ["Unknown", "Error", None])
-
-                        if should_report:
-                            logger.info(f"{person_id} ({recognized_name}) için raporlama koşulları sağlandı. Rapor oluşturuluyor...")
-
-                            # Eksik ekipmanları belirle
-                            missing_equipment_list = []
-                            if not has_helmet: missing_equipment_list.append("Baret")
-                            if not has_vest: missing_equipment_list.append("Yelek")
-
-                            # Rapor için son görülen frame'i (ROI) kullan
-                            self.create_safety_report(person_id, recognized_name, tracker_entry['last_seen_frame'], missing_equipment_list)
-
-                            # Raporlandı olarak işaretle ve son rapor zamanını güncelle
-                            tracker_entry['reported'] = True
-                            tracker_entry['last_report_time'] = current_time
-                            # Opsiyonel: timestamp'i sıfırlayıp delay'i tekrar başlatabiliriz ama cooldown varken gerekmeyebilir
-                            # tracker_entry['timestamp'] = current_time
-
-                        elif not tracker_entry['reported']:
-                             # Raporlanmadıysa son frame'i güncelle (henüz rapor süresi dolmamış olabilir)
-                            self.unsafe_persons_tracker[person_id]['last_seen_frame'] = person_roi.copy()
-
-                        # Sürekli güvensiz kalanlar için status'a uyarı ekleyebiliriz
-                        if tracker_entry['reported'] and not can_report_again:
-                             remaining_cooldown = int(report_cooldown - (current_time - tracker_entry['last_report_time']))
+                # 8. Çizim
+                box_color = (0, 255, 0) if is_safe else (0, 0, 255)
+                status_prefix = "Safe" if is_safe else "Unsafe"
+                person_status_text = status_prefix
+                if recognized_name not in ["Unknown", "Error", None]:
+                    person_status_text += f" ({recognized_name} - {confidence}%)"
+                elif recognized_name == "Error":
+                    person_status_text += " (Face Rec Error)"
+                elif not is_safe: # Güvensiz ve tanınamayan
+                    person_status_text += " (Unknown)"
+                # Cooldown veya gecikme bilgisini ekle
+                if not is_safe and person_id in self.unsafe_persons_tracker:
+                    tracker_entry = self.unsafe_persons_tracker[person_id]
+                    time_elapsed = current_time - tracker_entry['timestamp']
+                    if tracker_entry['reported']:
+                        remaining_cooldown = int(60 - (current_time - tracker_entry['last_report_time']))
+                        if remaining_cooldown > 0:
                              person_status_text += f" (Raporlandi - {remaining_cooldown}s)"
-                        elif tracker_entry['reported']:
-                             person_status_text += " (Raporlandi)" # Soğuma bitti ama hala güvensizse
-                        elif time_elapsed > 1:
-                            person_status_text += f" ({int(time_elapsed)}s)" # Kaç sn güvensiz
+                        else:
+                             person_status_text += " (Raporlandi)"
+                    elif time_elapsed > 1:
+                         person_status_text += f" ({int(time_elapsed)}s)"
 
-                # --- Çizim ---
-                cv2.rectangle(frame, (x1, y1), (x2, y2), box_color, 2)
-                (text_width, text_height), baseline = cv2.getTextSize(person_status_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
-                text_y_status = y1 - 10 if y1 - 10 > text_height else y1 + text_height + 5
-                # Ana durum metni için arka plan
-                cv2.rectangle(frame, (x1, text_y_status - text_height - baseline), (x1 + text_width, text_y_status + baseline), (0,0,0), -1)
-                cv2.putText(frame, person_status_text, (x1, text_y_status), cv2.FONT_HERSHEY_SIMPLEX, 0.6, box_color, 2)
+                self._draw_person_status(frame, person_box, person_status_text, box_color)
+                self._draw_ppe_labels(frame, person_box, has_helmet, has_vest)
 
-                # --- Ekipman Etiketlerini Belirle ---
-                missing_items = []
-                equipped_items = []
-                if not has_helmet: missing_items.append("BARET")
-                else: equipped_items.append("BARET")
-                if not has_vest: missing_items.append("YELEK")
-                else: equipped_items.append("YELEK")
-
-                label_font_scale = 0.5
-                label_thickness = 1
-                label_padding = 5
-
-                # --- Eksik Ekipman Etiketlerini Çiz (Kırmızı, Sağ Taraf) ---
-                if not is_safe:
-                    label_y_offset_right = text_height + 10 # Ana metnin biraz altına
-                    label_margin_x_right = 10 # Kutunun sağına olan boşluk
-
-                    for item_text in missing_items:
-                        (label_w, label_h), label_bl = cv2.getTextSize(item_text, cv2.FONT_HERSHEY_SIMPLEX, label_font_scale, label_thickness)
-                        rect_x1 = x2 + label_margin_x_right
-                        rect_y1 = y1 + label_y_offset_right
-                        rect_x2 = rect_x1 + label_w + 2 * label_padding
-                        rect_y2 = rect_y1 + label_h + 2 * label_padding
-                        # Sınır kontrolü (frame dışına taşmasın)
-                        if rect_x2 < w_frame and rect_y2 < h_frame:
-                            cv2.rectangle(frame, (rect_x1, rect_y1), (rect_x2, rect_y2), (0, 0, 255), -1) # Kırmızı
-                            text_x = rect_x1 + label_padding
-                            text_y_label = rect_y1 + label_h + label_padding
-                            cv2.putText(frame, item_text, (text_x, text_y_label), cv2.FONT_HERSHEY_SIMPLEX, label_font_scale, (255, 255, 255), label_thickness)
-                        label_y_offset_right += label_h + 2 * label_padding + 5
-
-                # --- Takılı Ekipman Etiketlerini Çiz (Yeşil, Sol Taraf) ---
-                label_y_offset_left = text_height + 10 # Ana metnin biraz altına
-                label_margin_x_left = 10 # Kutunun soluna olan boşluk
-
-                for item_text in equipped_items:
-                    (label_w, label_h), label_bl = cv2.getTextSize(item_text, cv2.FONT_HERSHEY_SIMPLEX, label_font_scale, label_thickness)
-                    # Etiket pozisyonu (kutunun soluna)
-                    rect_x2 = x1 - label_margin_x_left
-                    rect_y1 = y1 + label_y_offset_left
-                    rect_x1 = rect_x2 - label_w - 2 * label_padding
-                    rect_y2 = rect_y1 + label_h + 2 * label_padding
-
-                    # Sınır kontrolü (frame dışına taşmasın)
-                    if rect_x1 > 0 and rect_y2 < h_frame:
-                        # Yeşil arka plan
-                        cv2.rectangle(frame, (rect_x1, rect_y1), (rect_x2, rect_y2), (0, 255, 0), -1) # Yeşil
-                        # Siyah yazı
-                        text_x = rect_x1 + label_padding
-                        text_y_label = rect_y1 + label_h + label_padding
-                        cv2.putText(frame, item_text, (text_x, text_y_label), cv2.FONT_HERSHEY_SIMPLEX, label_font_scale, (0, 0, 0), label_thickness)
-                    # Bir sonraki etiket için y offset'i artır
-                    label_y_offset_left += label_h + 2 * label_padding + 5
-
-            # --- Takipçi Temizliği ---
-            # Bu frame'de görülmeyen ama hala takipte olanları kontrol et
-            stale_ids = set(self.unsafe_persons_tracker.keys()) - processed_person_ids
-            for stale_id in stale_ids:
-                 # Ne kadar süredir görülmedi?
-                 tracker_entry = self.unsafe_persons_tracker[stale_id]
-                 time_since_last_seen = current_time - tracker_entry['timestamp'] # İlk görüldüğü zamandan beri geçen süre
-                 last_report_time = tracker_entry.get('last_report_time', 0)
-                 is_reported = tracker_entry.get('reported', False)
-                 cooldown_active = is_reported and (current_time - last_report_time <= report_cooldown)
-
-                 # Silme koşulları
-                 # 1. Raporlanmadıysa ve uzun süre (delay*2) görülmediyse sil
-                 if not is_reported and time_since_last_seen > self.report_delay * 2:
-                     logger.debug(f"Takipteki {stale_id} uzun süredir görülmedi (raporlanmadı), takipten çıkarılıyor.")
-                     del self.unsafe_persons_tracker[stale_id]
-                 # 2. Raporlandıysa, soğuma süresi bittiyse VE uzun süre (delay*5) görülmediyse sil
-                 elif is_reported and not cooldown_active and time_since_last_seen > self.report_delay * 5:
-                     logger.debug(f"Raporlanan {stale_id} uzun süredir görülmedi (soğuma bitti), takipten çıkarılıyor.")
-                     del self.unsafe_persons_tracker[stale_id]
-                 # 3. Raporlandıysa ve soğuma süresi aktifken kişi kaybolduysa? Şimdilik tutuyoruz.
-                 # else:
-                 #    logger.debug(f"Stale ID {stale_id} durumu: reported={is_reported}, cooldown_active={cooldown_active}, time_since_last_seen={time_since_last_seen:.1f}s. Henüz silinmiyor.")
-
+            # 9. Eski Takipçileri Temizle
+            self._cleanup_stale_trackers(processed_person_ids_in_frame)
 
         except Exception as e:
-             logger.error(f"Sonuç işleme hatası (process_detection_results): {e}", exc_info=True)
+             logger.exception(f"Sonuç işleme hatası (process_detection_results)")
              cv2.putText(frame, "Result Processing Error", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,0,255), 2)
 
         return frame
@@ -1006,7 +1060,56 @@ except Exception as e:
     logger.error(f"Uygulama başlatılırken kritik hata: {e}", exc_info=True)
     # stay_safe_app None kalacak
 
+# --- Dashboard Veri Yardımcı Fonksiyonları ---
+
+def _get_dashboard_summary_data():
+    """Dashboard özet kartları için verileri alır."""
+    today = timezone.now().date()
+    total_reports = EmployeeReport.objects.count()
+    today_reports = EmployeeReport.objects.filter(timestamp__date=today).count()
+    # İleride buraya başka özetler eklenebilir
+    return {
+        'total_reports': total_reports,
+        'today_reports': today_reports,
+    }
+
+def _get_daily_report_chart_data(days=7):
+    """Son 'days' güne ait günlük rapor sayılarını grafik için hazırlar."""
+    today = timezone.now().date()
+    start_date = today - timedelta(days=days-1)
+    reports_per_day = EmployeeReport.objects.filter(timestamp__date__gte=start_date)\
+                                          .annotate(day=TruncDate('timestamp'))\
+                                          .values('day')\
+                                          .annotate(count=Count('id'))\
+                                          .order_by('day')
+
+    chart_labels = []
+    chart_data = []
+    report_counts_dict = {r['day']: r['count'] for r in reports_per_day}
+
+    for i in range(days):
+        current_day = start_date + timedelta(days=i)
+        chart_labels.append(current_day.strftime('%d %b'))
+        chart_data.append(report_counts_dict.get(current_day, 0))
+
+    return json.dumps(chart_labels), json.dumps(chart_data)
+
+def _get_employee_report_chart_data(top_n=5):
+    """En çok raporlanan çalışanları (ilk 'top_n') grafik için hazırlar."""
+    employee_reports = EmployeeReport.objects.filter(employee__isnull=False)\
+                                             .values('employee__name', 'employee__surname')\
+                                             .annotate(
+                                                 full_name=Concat(F('employee__name'), Value(' '), F('employee__surname')),
+                                                 report_count=Count('id')
+                                             )\
+                                             .order_by('-report_count')[:top_n]
+
+    chart_labels = [item['full_name'] for item in employee_reports]
+    chart_data = [item['report_count'] for item in employee_reports]
+    return json.dumps(chart_labels), json.dumps(chart_data)
+
 # --- Django Views ---
+
 def check_app_status(func):
     """View fonksiyonları için stay_safe_app'in durumunu kontrol eden decorator."""
     def wrapper(request, *args, **kwargs):
@@ -1044,58 +1147,19 @@ def home(request):
     if not app_ready:
         return render(request, 'display/home.html', context)
 
-    # Dashboard verilerini hazırla
-    today = timezone.now().date()
-    seven_days_ago = today - timedelta(days=6) # Son 7 günü kapsa
+    # Dashboard verilerini yardımcı fonksiyonlardan al
+    summary_data = _get_dashboard_summary_data()
+    daily_chart_labels, daily_chart_data = _get_daily_report_chart_data(days=7)
+    employee_chart_labels, employee_chart_data = _get_employee_report_chart_data(top_n=5)
+    recent_reports = EmployeeReport.objects.all()[:5] # Bu basit olduğu için burada kalabilir
 
-    # Özet Kartlar için Veriler
-    total_reports = EmployeeReport.objects.count()
-    today_reports = EmployeeReport.objects.filter(timestamp__date=today).count()
-    # Buraya başka özet istatistikler eklenebilir (örn: en çok raporlanan çalışan vs.)
-
-    # Grafik için Veriler (Son 7 gün)
-    reports_per_day = EmployeeReport.objects.filter(timestamp__date__gte=seven_days_ago)\
-                                         .annotate(day=TruncDate('timestamp'))\
-                                         .values('day')\
-                                         .annotate(count=Count('id'))\
-                                         .order_by('day')
-
-    # Grafik için etiketleri ve verileri hazırla
-    # Son 7 günün tamamını göstermek için (rapor olmayan günler dahil)
-    chart_labels = []
-    chart_data = []
-    report_counts_dict = {r['day']: r['count'] for r in reports_per_day}
-
-    for i in range(7):
-        current_day = seven_days_ago + timedelta(days=i)
-        chart_labels.append(current_day.strftime('%d %b')) # Örn: 25 May
-        chart_data.append(report_counts_dict.get(current_day, 0))
-
-    # --- Yeni: Çalışan Bazlı Grafik Verileri (Top 5) ---
-    employee_reports_top5 = EmployeeReport.objects.filter(employee__isnull=False)\
-                                            .values('employee__name', 'employee__surname')\
-                                            .annotate(
-                                                full_name=Concat(F('employee__name'), Value(' '), F('employee__surname')),
-                                                report_count=Count('id')
-                                            )\
-                                            .order_by('-report_count')[:5]
-
-    employee_chart_labels = [item['full_name'] for item in employee_reports_top5]
-    employee_chart_data = [item['report_count'] for item in employee_reports_top5]
-    # --------------------------------------------------
-
-    # Son Raporlar Listesi
-    recent_reports = EmployeeReport.objects.all()[:5]
-
+    context.update(summary_data)
     context.update({
-        'total_reports': total_reports,
-        'today_reports': today_reports,
-        'chart_labels': json.dumps(chart_labels),
-        'chart_data': json.dumps(chart_data),
+        'chart_labels': daily_chart_labels,
+        'chart_data': daily_chart_data,
+        'employee_chart_labels': employee_chart_labels,
+        'employee_chart_data': employee_chart_data,
         'recent_reports': recent_reports,
-        # Yeni eklenen context değişkenleri
-        'employee_chart_labels': json.dumps(employee_chart_labels),
-        'employee_chart_data': json.dumps(employee_chart_data),
     })
 
     return render(request, 'display/home.html', context)

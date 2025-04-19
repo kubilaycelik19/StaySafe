@@ -1,27 +1,36 @@
-<nav class="navbar navbar-expand-lg bg-warning navbar-light">
+<nav class="navbar navbar-expand-lg navbar-dark bg-dark fixed-top">
     <div class="container">
-        <a href="/display/" class="navbar-brand">StaySafe</a>
-
-        <ul class="navbar-nav me-auto">
-            <li class="nav-item">
-                <a href="/display/index" class="nav-link">Canlı Görüntü</a>
-            </li>
-
-            <li class="nav-item">
-                <a href="/employees/" class="nav-link">Çalışanlar</a>
-            </li>
-
-            <li class="nav-item">
-                <a href="/reports" class="nav-link">Raporlar</a>
-            </li>
-
-            <li class="nav-item">
-                <a href="/face-recognition-train/" class="nav-link">Create Dataset</a>
-            </li>
-
-            <li class="nav-item">
-                <a href="/face-recognition-train/train" class="nav-link">Train Model</a>
-            </li>
-        </ul>
+        <a class="navbar-brand" href="{% url 'home' %}">StaySafe</a>
+        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
+            <span class="navbar-toggler-icon"></span>
+        </button>
+        <div class="collapse navbar-collapse" id="navbarNav">
+            <ul class="navbar-nav me-auto mb-2 mb-lg-0">
+                <li class="nav-item">
+                    <a class="nav-link" href="{% url 'display:home' %}">Dashboard</a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link" href="{% url 'display:index' %}">Kamera İzleme</a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link" href="{% url 'reports:report_list' %}">Raporlar</a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link" href="{% url 'employees:employee_list' %}">Çalışanlar</a>
+                </li>
+            </ul>
+            <ul class="navbar-nav ms-1">
+                <li class="nav-item">
+                    <a class="nav-link" href="{% url 'account:user_register' %}">Kayıt Ol</a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link" href="{% url 'account:user_login' %}">Giriş Yap</a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link" href="{% url 'account:user_logout' %}">Çıkış Yap</a>
+                </li>
+            </ul>
+        </div>
     </div>
 </nav>
+<div style="padding-top: 60px;"></div>

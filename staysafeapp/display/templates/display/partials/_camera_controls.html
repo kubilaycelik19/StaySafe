@@ -10,7 +10,7 @@
         
         // Kamera durumunu kontrol etme fonksiyonu
         function checkCameraState() {
-            fetch("{% url 'video_feed' %}")
+            fetch("{% url 'display:video_feed' %}")
                 .then(response => {
                     if (!response.ok) throw new Error('Camera offline');
                     return response.blob();
@@ -29,7 +29,7 @@
                 statusBadge.innerHTML = '<i class="fas fa-circle me-1"></i>Canlı Yayın';
                 cameraOffMessage.style.display = 'none';
                 toggleText.textContent = 'Kamerayı Kapat';
-                videoFeed.src = "{% url 'video_feed' %}?" + new Date().getTime();
+                videoFeed.src = "{% url 'display:video_feed' %}?" + new Date().getTime();
             } else {
                 statusBadge.className = 'status-badge bg-danger text-white';
                 statusBadge.innerHTML = '<i class="fas fa-circle me-1"></i>Kapalı';
@@ -42,7 +42,7 @@
         toggleBtn.addEventListener('click', function() {
             const csrfToken = document.querySelector('[name=csrfmiddlewaretoken]').value;
             
-            fetch("{% url 'toggle_camera' %}", {
+            fetch("{% url 'display:toggle_camera' %}", {
                 method: 'POST',
                 headers: {
                     'X-CSRFToken': csrfToken,

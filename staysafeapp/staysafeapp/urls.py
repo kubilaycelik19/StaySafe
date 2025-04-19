@@ -23,11 +23,12 @@ from django.conf.urls.static import static
 def redirect_to_home(request):
     return redirect('display/')
 
+
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('', redirect_to_home, name='home'),  # Ana sayfa yönlendirmesi
     path('display/', include('display.urls')),
     path('employees/', include('employees.urls')),
     path('reports/', include('reports.urls')),
-    path('face-recognition-train/', include('faceRecognition_train.urls')),  # Yeni eklenen URL
+    path('account/', include('account.urls')),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

@@ -68,11 +68,11 @@
                             </td>
                             <td>
                                 {# Görüntüle Butonu (Detay Sayfası) #}
-                                <a href="{% url 'report_detail' report.id %}" class="btn btn-sm btn-info me-1" title="Detayları Görüntüle">
+                                <a href="{% url 'reports:report_detail' report.id %}" class="btn btn-sm btn-info me-1" title="Detayları Görüntüle">
                                     <i class="fas fa-eye"></i> Detay
                                 </a>
                                 {# Silme Butonu (Form ile) #}
-                                <form action="{% url 'report_delete' report.id %}" method="post" class="d-inline" onsubmit="return confirm('Bu raporu silmek istediğinizden emin misiniz?');">
+                                <form action="{% url 'reports:report_delete' report.id %}" method="post" class="d-inline" onsubmit="return confirm('Bu raporu silmek istediğinizden emin misiniz?');">
                                     {% csrf_token %}
                                     <button type="submit" class="btn btn-sm btn-danger" title="Sil">
                                         <i class="fas fa-trash">Sil</i>

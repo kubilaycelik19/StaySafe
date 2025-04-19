@@ -37,4 +37,4 @@ def report_delete(request, report_id):
     except Exception as e:
         messages.error(request, f"Rapor silinirken bir hata oluştu: {e}")
 
-    return redirect('report_list') # Rapor listesine geri yönlendir
+    return redirect('reports:report_list') # Rapor listesine geri yönlendir
