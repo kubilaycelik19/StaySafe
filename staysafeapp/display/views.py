@@ -24,6 +24,7 @@ from django.contrib.auth.decorators import login_required # login_required impor
 
 # ArcFace için eklenenler
 import torch.nn as nn
+from torchvision import models # torchvision.models import et
 from torchvision.transforms import v2 as T
 from PIL import Image
 
@@ -89,40 +90,40 @@ except AttributeError:
     CASCADE_PATH = os.path.join(STATIC_DIR, 'haarcascade_frontalface_default.xml') # Statik klasördeki cascade kullanılacak
 
 # ArcFace için eklenen dosya yolları
-ARCFACE_MODEL_PATH = os.path.join(MODELS_DIR, 'arcface_model_50e_0.001lr_32bs.pth')
+ARCFACE_MODEL_PATH = os.path.join(MODELS_DIR, 'ArcFaceResNet_epoch18_bs8_acc99.1.pth')
 CLASS_NAMES_PATH = os.path.join(MODELS_DIR, 'class_names.json')
 
 REPORT_DELAY = 10 # Raporlama öncesi bekleme süresi (saniye)
 
-# --- ArcFace Model Tanımı (faceRecognition_train/views.py'den alındı) ---
-class ArcFaceModel(nn.Module):
-    def __init__(self, num_classes, embedding_dim=512):
-        super(ArcFaceModel, self).__init__()
-        # Basitleştirilmiş bir backbone (örnek, gerçek bir ResNet vb. kullanılabilir)
-        self.backbone = nn.Sequential(
-            nn.Conv2d(3, 64, kernel_size=3, padding=1), nn.BatchNorm2d(64), nn.ReLU(), nn.MaxPool2d(2),
-            nn.Conv2d(64, 128, kernel_size=3, padding=1), nn.BatchNorm2d(128), nn.ReLU(), nn.MaxPool2d(2),
-            nn.Conv2d(128, 256, kernel_size=3, padding=1), nn.BatchNorm2d(256), nn.ReLU(), nn.MaxPool2d(2),
-            nn.Conv2d(256, 512, kernel_size=3, padding=1), nn.BatchNorm2d(512), nn.ReLU(), nn.MaxPool2d(2),
-            nn.AdaptiveAvgPool2d(1),
-            nn.Flatten(),
-            nn.Linear(512, embedding_dim)
-        )
+# --- ArcFace Model Tanımı (ResNet Tabanlı - BN ve Embedding ile) ---
+class ArcFaceResNetModel(nn.Module):
+    def __init__(self, num_classes, embedding_dim=512, pretrained=False):
+        super(ArcFaceResNetModel, self).__init__()
+        self.backbone = models.resnet18(pretrained=pretrained)
+        in_features = self.backbone.fc.in_features
+        self.backbone.fc = nn.Identity() # Son katmanı kaldır
+
+        # BN katmanını tekrar ekle
+        self.bn = nn.BatchNorm1d(in_features)
+
+        # embedding_layer'ı tut
+        self.embedding_layer = nn.Linear(in_features, embedding_dim)
+
+        # ArcFace sınıflandırma ağırlığı
         self.num_classes = num_classes
         self.embedding_dim = embedding_dim
-        # ArcFace loss katmanı burada tanımlanmıyor, sadece embedding çıkarılıyor
-        # Sınıflandırma için bir lineer katman eklenebilir veya embedding karşılaştırması yapılabilir.
-        # Şimdilik eğitimdeki yapıldı. Duruma göre değiştirecem.
-        self.weight = nn.Parameter(torch.FloatTensor(num_classes, embedding_dim))
+        self.weight = nn.Parameter(torch.FloatTensor(num_classes, self.embedding_dim))
         nn.init.xavier_uniform_(self.weight)
 
     def forward(self, x):
         features = self.backbone(x)
+        # BN katmanını uygula
+        features = self.bn(features)
+        # embedding_layer'ı BN'den sonra uygula
+        features = self.embedding_layer(features)
         features = nn.functional.normalize(features, p=2, dim=1)
-        # Eğer sadece embedding isteniyorsa burayı döndür:
-        # return features
 
-        # Eğitimdeki gibi sınıflandırma çıktısı (logitler/cosine similarity):
+        # Sınıflandırma çıktısı
         weight = nn.functional.normalize(self.weight, p=2, dim=1)
         cos = nn.functional.linear(features, weight)
         return cos
@@ -200,31 +201,85 @@ class FaceRecognitionSystem:
             self.names = {}
 
     def load_arcface_model(self):
-        """ArcFace modelini (.pth) yükler."""
+        """ArcFace ResNet modelini (.pth) yükler ve sınıf sayısı uyumluluğunu kontrol eder."""
+        self.model_loaded = False
         if not os.path.exists(ARCFACE_MODEL_PATH):
             logger.error(f"ArcFace model dosyası bulunamadı: {ARCFACE_MODEL_PATH}")
             return
         if not os.path.exists(CLASS_NAMES_PATH):
             logger.error(f"ArcFace sınıf isimleri dosyası bulunamadı: {CLASS_NAMES_PATH}")
-            return # Model yüklense bile isimler olmadan anlamsız
+            return
 
         try:
-            # Önce sınıf sayısını öğrenmemiz lazım
+            # 1. JSON'dan beklenen sınıf sayısını oku
             with open(CLASS_NAMES_PATH, 'r') as f:
-                class_names = json.load(f)
-            num_classes = len(class_names)
-            if num_classes == 0:
-                logger.error("Sınıf isimleri dosyası boş.")
+                class_names_list = json.load(f)
+            num_classes_from_json = len(class_names_list)
+            if num_classes_from_json == 0:
+                logger.error("Sınıf isimleri dosyası (class_names.json) boş.")
+                return
+            logger.info(f"class_names.json dosyasından {num_classes_from_json} sınıf ismi okundu.")
+
+            # 2. Model checkpoint'ini yükle
+            logger.info(f"'{ARCFACE_MODEL_PATH}' modeli yükleniyor...")
+            # Checkpoint'in doğrudan state_dict olduğunu varsayıyoruz (yaygın durum)
+            state_dict = torch.load(ARCFACE_MODEL_PATH, map_location=self.device)
+            logger.info("Model state_dict dosyası başarıyla yüklendi.")
+
+            # 3. Modeli Tanımla (Güncellenmiş ArcFaceResNetModel kullanarak)
+            self.arcface_model = ArcFaceResNetModel(num_classes=num_classes_from_json, pretrained=False).to(self.device)
+            logger.info(f"ArcFaceResNetModel {num_classes_from_json} sınıf ile tanımlandı.")
+
+            # 4. State Dict'ten Modelin Sınıf Sayısını Kontrol Et (weight anahtarı üzerinden)
+            weight_key = 'weight' # Model tanımımızdaki parametre adı
+            num_classes_from_model = -1
+            if weight_key in state_dict:
+                model_weight_shape = state_dict[weight_key].shape
+                if len(model_weight_shape) >= 1:
+                    num_classes_from_model = model_weight_shape[0]
+                else:
+                    logger.error(f"Model state_dict'indeki '{weight_key}' parametresinin şekli geçersiz: {model_weight_shape}")
+                    return
+            else:
+                logger.error(f"Model state_dict dosyasında ('{ARCFACE_MODEL_PATH}') beklenen sınıflandırma ağırlık anahtarı ('{weight_key}') bulunamadı.")
+                logger.info(f"State_dict içindeki anahtarlar (ilk 10): {list(state_dict.keys())[:10]}...")
                 return
 
-            # Modeli tanımla ve state dict'i yükle
-            self.arcface_model = ArcFaceModel(num_classes=num_classes).to(self.device)
-            self.arcface_model.load_state_dict(torch.load(ARCFACE_MODEL_PATH, map_location=self.device))
-            self.arcface_model.eval() # Modeli çıkarım moduna al
-            self.model_loaded = True
-            logger.info(f"ArcFace modeli ({ARCFACE_MODEL_PATH}) ve {num_classes} sınıf başarıyla yüklendi.")
+            logger.info(f"Model state_dict'i ({ARCFACE_MODEL_PATH}) {num_classes_from_model} sınıf ile eğitilmiş görünüyor.")
+
+            # 5. Sınıf Sayılarını Karşılaştır
+            if num_classes_from_json != num_classes_from_model:
+                logger.error(f"Sınıf sayısı uyuşmazlığı! Model ({ARCFACE_MODEL_PATH}) {num_classes_from_model} sınıf bekliyor, ancak class_names.json {num_classes_from_json} sınıf içeriyor. Model yüklenemedi.")
+                return
+
+            # 6. State Dict'i Modele Yükle (strict=True ile)
+            logger.info("Sınıf sayıları uyumlu. State dict modele yükleniyor...")
+            try:
+                # 'module.' ön ekini kontrol et ve temizle (varsa)
+                if all(key.startswith('module.') for key in state_dict.keys()):
+                    logger.info("State dict anahtarlarında 'module.' ön eki algılandı, temizleniyor...")
+                    state_dict = {k[len('module.'):]: v for k, v in state_dict.items()}
+
+                self.arcface_model.load_state_dict(state_dict, strict=True)
+                self.arcface_model.eval()
+                self.model_loaded = True
+                logger.info(f"ArcFace ResNet modeli ({ARCFACE_MODEL_PATH}) {num_classes_from_json} sınıf ile başarıyla yüklendi.")
+            except RuntimeError as e:
+                logger.error(f"State dict yüklenirken hata (muhtemelen anahtar uyuşmazlığı): {e}")
+                logger.info("İpucu: Model tanımı (ArcFaceResNetModel) ile kaydedilen modelin state_dict'indeki anahtarlar hala tam eşleşmiyor olabilir.")
+                self.model_loaded = False
+
+        except FileNotFoundError:
+            logger.error(f"Model veya sınıf dosyası bulunamadı. Kontrol edin: {ARCFACE_MODEL_PATH}, {CLASS_NAMES_PATH}")
+            self.model_loaded = False
+        except json.JSONDecodeError:
+            logger.error(f"Sınıf isimleri dosyası ({CLASS_NAMES_PATH}) geçerli bir JSON değil.")
+            self.model_loaded = False
+        except KeyError as e:
+            logger.error(f"Model state_dict dosyasında beklenen anahtar bulunamadı: {e}")
+            self.model_loaded = False
         except Exception as e:
-            logger.exception(f"ArcFace modeli yüklenirken hata oluştu")
+            logger.exception(f"ArcFace modeli yüklenirken beklenmedik bir hata oluştu")
             self.model_loaded = False
 
     def load_arcface_class_names(self):
@@ -315,23 +370,6 @@ class FaceRecognitionSystem:
                     logger.warning("Tespit edilen yüz ROI'si boş.")
                     return name, confidence_score
 
-                # 2. Tanıma (Yönteme göre farklılık gösterir)
-                if self.method == 'lbph':
-                    try:
-                        id_recognized, confidence = self.recognizer.predict(face_roi_gray)
-                        if confidence < 80: # LBPH: Düşük confidence iyi
-                            name = self.names.get(str(id_recognized), "Unknown")
-                            confidence_score = round((1 - (confidence / 100)) * 100)
-                        else:
-                             name = "Unknown"
-                             confidence_score = round((1 - (confidence / 100)) * 100)
-                    except cv2.error as cv_err:
-                        logger.warning(f"LBPH predict hatası: {cv_err}")
-                        name = "Error"
-                    except Exception as pred_err:
-                        logger.error(f"LBPH predict sırasında beklenmedik hata: {pred_err}")
-                        name = "Error"
-
                 elif self.method == 'arcface':
                     try:
                         # Görüntüyü hazırla (PIL -> Transform -> Tensor)
@@ -350,7 +388,7 @@ class FaceRecognitionSystem:
                         confidence = confidence.item() * 100 # Yüzdeye çevir
 
                         # Güven eşiği (ArcFace için % olarak)
-                        if confidence > 60: # Eşik değeri (ayarlanabilir)
+                        if confidence > 40: # Eşik değeri (ayarlanabilir)
                             name = self.names.get(predicted_idx, "Unknown")
                             confidence_score = round(confidence)
                         else:
@@ -527,7 +565,7 @@ class StaySafeApp:
 
         try:
             # Django ORM kullanarak çalışanı bul (isme göre, büyük/küçük harf duyarsız)
-            worker = Employee.objects.filter(name__iexact=name).first()
+            worker = Employee.objects.filter(name__iexact=name.split()[0]).first() # İsim ve soyisim arasında boşluk varsa ilk kısmı al
             if worker:
                 # worker bir Employee nesnesi
                 # surname ve age alanlarının Employee modelinde olduğunu varsayıyoruz
@@ -550,7 +588,7 @@ class StaySafeApp:
             try:
                 # Django ORM kullanarak çalışan bulma
                 
-                employee_instance = Employee.objects.filter(name__iexact=recognized_name).first()
+                employee_instance = Employee.objects.filter(name__iexact=recognized_name.split()[0]).first()
                 if not employee_instance:
                      logger.warning(f"Rapor için çalışan bulunamadı (Django DB): {recognized_name}")
                 # Alternatif: WorkerDatabase'den alınan ID ile Employee bulunur mu?
@@ -680,7 +718,7 @@ class StaySafeApp:
         else: # Güvensiz durum
             if person_id not in self.unsafe_persons_tracker:
                 # İlk kez güvensiz görüldü, takibe al
-                logger.info(f"{person_id} güvensiz tespit edildi, takip başlatılıyor.")
+                #logger.info(f"{person_id} güvensiz tespit edildi, takip başlatılıyor.")
                 self.unsafe_persons_tracker[person_id] = {
                     'timestamp': current_time,
                     'reported': False,
@@ -695,7 +733,7 @@ class StaySafeApp:
 
                 # Raporlama koşulları:
                 # 1. Yeterli süre geçtiyse (report_delay)
-                # 2. Henüz raporlanmadıysa VEYA raporlandı ama soğuma süresi bittiyse
+                # 2. Henüz raporlanmadıysa VEYA raporlanmadı ama soğuma süresi bittiyse
                 # 3. Yüz tanındıysa (Unknown/Error değilse)
                 should_report_trigger = (time_elapsed >= self.report_delay and
                                          (not tracker_entry['reported'] or can_report_again) and
@@ -951,7 +989,7 @@ class StaySafeApp:
     def get_video_stream(self, recognition=False):
         """Video akışını üreten generator fonksiyonu."""
         if not self.camera_active or self.face_recognizer.cam is None or not self.face_recognizer.cam.isOpened():
-            logger.warning("Video akışı istendi ancak kamera aktif/açık değil.")
+            #logger.warning("Video akışı istendi ancak kamera aktif/açık değil.")
             # Kamera kapalıyken istemciye bilgi veren bir frame gönderelim
             error_frame = np.zeros((CAMERA['height'], CAMERA['width'], 3), dtype=np.uint8)
             cv2.putText(error_frame, "Camera Off", (int(CAMERA['width']/2)-100, int(CAMERA['height']/2)), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
@@ -1024,7 +1062,7 @@ class StaySafeApp:
         # Son bir "Camera Off" frame'i gönder (eğer daha önce gönderilmediyse)
         if not sent_camera_off_frame:
             try:
-                logger.info("Kamera kapatıldığı/döngü bittiği için son 'Camera Off' frame gönderiliyor.")
+                #logger.info("Kamera kapatıldığı/döngü bittiği için son 'Camera Off' frame gönderiliyor.")
                 error_frame = np.zeros((CAMERA['height'], CAMERA['width'], 3), dtype=np.uint8)
                 cv2.putText(error_frame, "Camera Off", (int(CAMERA['width']/2)-100, int(CAMERA['height']/2)), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
                 ret_encode, buffer = cv2.imencode('.jpg', error_frame)
@@ -1168,7 +1206,7 @@ def home(request):
 def video_feed(request):
     """Video akışını sağlar."""
     if not stay_safe_app.camera_active:
-        logger.info("Video akışı istendi ancak kamera kapalı.")
+        #logger.info("Video akışı istendi ancak kamera kapalı.")
         # Kamera kapalıyken boş bir akış veya statik bir görüntü döndür
         return StreamingHttpResponse(content_type="multipart/x-mixed-replace; boundary=frame") # Boş akış döndürür
 

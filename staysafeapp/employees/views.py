@@ -27,7 +27,7 @@ def employee_create(request):
         if form.is_valid():
             form.save()
             messages.success(request, 'Çalışan başarıyla eklendi.')
-            return redirect('employee_list')
+            return redirect('employees:employee_list')
     else:
         form = EmployeeForm()
     return render(request, 'employees/employee_form.html', {'form': form})
@@ -39,7 +39,7 @@ def employee_edit(request, sicil_no):
         if form.is_valid():
             form.save()
             messages.success(request, 'Çalışan başarıyla güncellendi.')
-            return redirect('employee_list')
+            return redirect('employees:employee_list')
     else:
         form = EmployeeForm(instance=employee)
     return render(request, 'employees/employee_form.html', {'form': form})
@@ -49,5 +49,5 @@ def employee_delete(request, sicil_no):
     if request.method == 'POST':
         employee.delete()
         messages.success(request, 'Çalışan başarıyla silindi.')
-        return redirect('employee_list')
+        return redirect('employees:employee_list')
     return render(request, 'employees/employee_confirm_delete.html', {'employee': employee})
