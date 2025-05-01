@@ -1,98 +1,22 @@
 {% extends "layout.html" %}
 
-{% block css_files %}
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.2.1/css/all.min.css"/>
-    <style>
-        .video-frame {
-            border: 2px solid #ffc107;
-            border-radius: 8px;
-            padding: 10px;
-            background-color: #f8f9fa;
-        }
-        .control-panel {
-            padding: 20px;
-            border-radius: 8px;
-            background-color: #f8f9fa;
-        }
-        .status-badge {
-            font-size: 14px;
-            padding: 5px 10px;
-            border-radius: 20px;
-            margin-bottom: 10px;
-        }
-        .camera-off {
-            display: none;
-        }
-    </style>
-{% endblock %}
-
 {% block content %}
 {% csrf_token %}
 <div class="container-fluid mt-4">
-    <div class="row">
-        <!-- Sol Taraf - Video Görüntüsü -->
-        <div class="col-md-8">
-            <div class="video-frame">
-                <div class="d-flex justify-content-between align-items-center mb-3">
-                    <h4 class="mb-0">
-                        <i class="fas fa-video me-2 text-warning"></i>
-                        Güvenlik Kamerası
-                    </h4>
-                    <div id="statusBadge" class="status-badge bg-success text-white">
-                        <i class="fas fa-circle me-1"></i>
-                        Canlı Yayın
-                    </div>
-                </div>
-                <div background="static/black.jpeg" style="position: relative;">
-                    <img id="videoFeed" src="{% url 'display:video_feed' %}" alt="Güvenlik Kamerası" class="img-fluid rounded">
-                    <div id="cameraOffMessage" class="camera-off position-absolute top-50 start-50 translate-middle text-center">
-                        <i class="fas fa-video-slash fa-3x text-warning mb-3"></i>
-                        <h5>Kamera Kapali</h5>
-                    </div>
-                </div>
-            </div>
-        </div>
+    
+        {% include "display/partials/_video_frame.html" %}
 
-        <!-- Sağ Taraf - Kontrol Paneli -->
-        <div class="col-md-4">
-            <div class="control-panel">
-                <h4 class="mb-4">
-                    <i class="fas fa-cogs me-2 text-warning"></i>
-                    Kontrol Paneli
-                </h4>
-                
-                <!-- Kamera Kontrolü -->
-                <div class="card mb-3">
-                    <div class="card-body">
-                        <h5 class="card-title mb-3">Kamera Kontrolü</h5>
-                        <button id="toggleCamera" class="btn btn-warning btn-lg w-100">
-                            <i class="fas fa-power-off me-2"></i>
-                            <span id="toggleText">Kamerayı Kapat</span>
-                        </button>
-                    </div>
-                </div>
-
-                <!-- Durum Bilgisi -->
-                <div class="card">
-                    <div class="card-body">
-                        <h5 class="card-title mb-3">Sistem Durumu</h5>
-                        <div class="d-flex justify-content-between align-items-center mb-2">
-                            <span>Kamera Durumu:</span>
-                            <span id="cameraStatus" class="text-success">Aktif</span>
-                        </div>
-                        <div class="d-flex justify-content-between align-items-center mb-2">
-                            <span>Son Kontrol:</span>
-                            <span id="current-time"></span>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
+        {% include "display/partials/_control_panel.html" %}
     </div>
 </div>
 {% endblock %}
 
+{% block css_files %}
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.2.1/css/all.min.css"/>
+    {% include "display/static/css/_frame_style.html" %}
+{% endblock %}
+
 {% block js_files %}
     <script src="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.3/js/bootstrap.min.js"></script>
-    {% include 'display/partials/_camera_controls.html' %}
+    {% include 'display/static/js/_camera_controls.html' %}
 {% endblock %}

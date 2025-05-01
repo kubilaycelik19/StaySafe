@@ -15,7 +15,7 @@ from django.shortcuts import render
 from django.views.decorators.csrf import csrf_exempt
 from django.core.files.base import ContentFile # Rapor görüntüsü kaydetmek için
 from django.core.files.storage import default_storage # Dosya işlemleri için
-from reports.models import EmployeeReport # Rapor modelini import et
+from reports.models import EmployeeReport # Report modeli de import edildi
 from django.utils import timezone # Zaman dilimi için
 from datetime import timedelta # Zaman farkı hesaplamak için
 from django.db.models.functions import TruncDate, Concat # Tarihe göre gruplamak için, Concat eklendi
@@ -1146,6 +1146,29 @@ def _get_employee_report_chart_data(top_n=5):
     chart_data = [item['report_count'] for item in employee_reports]
     return json.dumps(chart_labels), json.dumps(chart_data)
 
+# Yeni fonksiyon: Eksik Ekipman Dağılım Verisi
+def _get_missing_equipment_chart_data():
+    """Eksik ekipman türlerine göre rapor sayısını hesaplar."""
+    try:
+        # 'missing_equipment' alanı boş veya null olmayan raporları al
+        # ve ekipman türüne göre gruplayıp say
+        missing_equipment_counts = EmployeeReport.objects.exclude(missing_equipment__isnull=True).exclude(missing_equipment__exact='') \
+                                        .values('missing_equipment') \
+                                        .annotate(count=Count('id')) \
+                                        .order_by('-count') # Çoktan aza doğru sırala
+
+        labels = [item['missing_equipment'] for item in missing_equipment_counts]
+        data = [item['count'] for item in missing_equipment_counts]
+
+        # Eğer hiç eksik ekipman raporu yoksa boş listeler döndür
+        if not labels:
+            return [], []
+
+        return labels, data
+    except Exception as e:
+        logger.error(f"Eksik ekipman grafik verisi alınırken hata: {e}")
+        return [], []
+
 # --- Django Views ---
 
 def check_app_status(func):
@@ -1185,20 +1208,37 @@ def home(request):
     if not app_ready:
         return render(request, 'display/home.html', context)
 
-    # Dashboard verilerini yardımcı fonksiyonlardan al
-    summary_data = _get_dashboard_summary_data()
-    daily_chart_labels, daily_chart_data = _get_daily_report_chart_data(days=7)
-    employee_chart_labels, employee_chart_data = _get_employee_report_chart_data(top_n=5)
-    recent_reports = EmployeeReport.objects.all()[:5] # Bu basit olduğu için burada kalabilir
+    # Özet veriler
+    summary_data = _get_dashboard_summary_data() # Sözlüğü al
 
-    context.update(summary_data)
-    context.update({
-        'chart_labels': daily_chart_labels,
-        'chart_data': daily_chart_data,
+    # Günlük rapor grafiği verileri
+    chart_labels, chart_data = _get_daily_report_chart_data()
+
+    # Çalışan rapor grafiği verileri
+    employee_chart_labels, employee_chart_data = _get_employee_report_chart_data()
+
+    # Eksik Ekipman Grafik Verileri
+    missing_equipment_labels, missing_equipment_data = _get_missing_equipment_chart_data()
+    logger.info(f"Missing Equipment Labels: {missing_equipment_labels}")
+    logger.info(f"Missing Equipment Data: {missing_equipment_data}")
+
+
+    # Son raporlar (limit=5)
+    recent_reports = EmployeeReport.objects.all().order_by('-timestamp')[:5]
+
+    context = {
+        'app_ready': True,
+        'total_reports': summary_data.get('total_reports', 0), # Sözlükten al
+        'today_reports': summary_data.get('today_reports', 0), # Sözlükten al
+        'camera_is_active': stay_safe_app.camera_active if app_ready else False,
+        'chart_labels': chart_labels,
+        'chart_data': chart_data,
         'employee_chart_labels': employee_chart_labels,
         'employee_chart_data': employee_chart_data,
+        'missing_equipment_labels': missing_equipment_labels,
+        'missing_equipment_data': missing_equipment_data,
         'recent_reports': recent_reports,
-    })
+    }
 
     return render(request, 'display/home.html', context)
 

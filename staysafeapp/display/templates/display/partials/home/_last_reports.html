@@ -1,0 +1,54 @@
+{% load static %}
+<div class="row">
+    <div class="col-lg-6 mb-4">
+        <div class="card shadow mb-4">
+            <div class="card-header py-3 bg-warning">
+                <h6 class="m-0 font-weight-bold text-dark"><i class="fas fa-history me-2"></i>Son Raporlar</h6>
+            </div>
+            <div class="card-body">
+                {% if recent_reports %}
+                    <ul class="list-group list-group-flush">
+                        {% for report in recent_reports %}
+                        <li class="list-group-item d-flex justify-content-between align-items-center">
+                            <div>
+                                <small class="d-block text-muted">{{ report.timestamp|date:"d M Y H:i" }}</small>
+                                {% if report.employee %}
+                                    <strong>{{ report.employee.name }} {{ report.employee.surname }}</strong>
+                                {% else %}
+                                    <strong class="text-danger">Bilinmeyen Çalışan</strong>
+                                {% endif %}
+                                <small class="d-block text-danger">Eksik: {{ report.missing_equipment|default:"Yok" }}</small>
+                            </div>
+                            {% if report.image %}
+                            <a href="{{ report.image.url }}" target="_blank" class="badge bg-secondary rounded-pill">Görsel</a>
+                            {% endif %}
+                        </li>
+                        {% endfor %}
+                    </ul>
+                {% else %}
+                    <p class="text-center text-muted">Henüz rapor bulunmuyor.</p>
+                {% endif %}
+                <div class="text-center mt-3">
+                    <a href="{% url 'reports:report_list' %}" class="btn btn-outline-warning btn-sm">Tüm Raporları Gör <i class="fas fa-arrow-right ms-1"></i></a>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-6 mb-4">
+        <div class="card shadow mb-4">
+            <div class="card-header py-3 bg-warning">
+                <h6 class="m-0 font-weight-bold text-dark"><i class="fas fa-pie-chart me-2"></i>En Çok Rapor Alan Çalışanlar (Top 5)</h6>
+            </div>
+            <div class="card-body">
+                {% if employee_chart_labels and employee_chart_data %}
+                    <div class="chart-pie pt-4 pb-2">
+                        <canvas id="employeeReportsChart"></canvas>
+                    </div>
+                {% else %}
+                    <p class="text-center text-muted mt-3">Çalışan rapor verisi bulunamadı.</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>

@@ -1,0 +1,56 @@
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+      const ctxEmployee = document.getElementById('employeeReportsChart');
+      if (ctxEmployee) {
+          ctxEmployee.getContext('2d');
+          const employeeReportsChart = new Chart(ctxEmployee, {
+              type: 'pie', // Pasta grafik
+              data: {
+                  labels: {{ employee_chart_labels|safe }},
+                  datasets: [{
+                      data: {{ employee_chart_data|safe }},
+                      // Farklı renkler tanımlayalım
+                      backgroundColor: [
+                          'rgba(255, 99, 132, 0.7)', // Kırmızımsı
+                          'rgba(54, 162, 235, 0.7)', // Mavi
+                          'rgba(255, 206, 86, 0.7)', // Sarı
+                          'rgba(75, 192, 192, 0.7)', // Yeşilimsi Mavi
+                          'rgba(153, 102, 255, 0.7)' // Mor
+                      ],
+                      borderColor: [
+                          'rgba(255, 99, 132, 1)',
+                          'rgba(54, 162, 235, 1)',
+                          'rgba(255, 206, 86, 1)',
+                          'rgba(75, 192, 192, 1)',
+                          'rgba(153, 102, 255, 1)'
+                      ],
+                      borderWidth: 1
+                  }]
+              },
+              options: {
+                  responsive: true,
+                  maintainAspectRatio: false,
+                  plugins: {
+                      legend: {
+                          position: 'top', // Etiketleri üste al
+                      },
+                      tooltip: {
+                          callbacks: {
+                              label: function(context) {
+                                  let label = context.label || '';
+                                  if (label) {
+                                      label += ': ';
+                                  }
+                                  if (context.parsed !== null) {
+                                      label += context.parsed + ' rapor';
+                                  }
+                                  return label;
+                              }
+                          }
+                      }
+                  }
+              }
+          });
+      }
+    });
+  </script>

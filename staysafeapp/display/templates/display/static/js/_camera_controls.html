@@ -1,0 +1,97 @@
+<script>
+    // Kamera durum takibi ve gerçek zamanlı güncellemeler
+    (function() {
+        // DOM Elementleri
+        const videoFeed = document.getElementById('videoFeed');
+        const cameraOffMessage = document.getElementById('cameraOffMessage');
+        const statusBadge = document.getElementById('statusBadge');
+        const toggleBtn = document.getElementById('toggleCamera');
+        const toggleText = document.getElementById('toggleText');
+        
+        // Kamera durumunu kontrol etme fonksiyonu
+        function checkCameraState() {
+            fetch("{% url 'display:video_feed' %}")
+                .then(response => {
+                    if (!response.ok) throw new Error('Camera offline');
+                    return response.blob();
+                })
+                .then(blob => {
+                    if (blob.size === 0) throw new Error('Empty stream');
+                    updateUI(true);
+                })
+                .catch(() => updateUI(false));
+        }
+    
+        // Arayüz güncelleme fonksiyonu
+        function updateUI(isActive) {
+            if (isActive) {
+                statusBadge.className = 'status-badge bg-success text-white';
+                statusBadge.innerHTML = '<i class="fas fa-circle me-1"></i>Canlı Yayın';
+                cameraOffMessage.style.display = 'none';
+                toggleText.textContent = 'Kamerayı Kapat';
+                videoFeed.src = "{% url 'display:video_feed' %}?" + new Date().getTime();
+            } else {
+                statusBadge.className = 'status-badge bg-danger text-white';
+                statusBadge.innerHTML = '<i class="fas fa-circle me-1"></i>Kapalı';
+                cameraOffMessage.style.display = 'block';
+                toggleText.textContent = 'Kamerayı Aç';
+            }
+        }
+    
+        // Buton event handler
+        toggleBtn.addEventListener('click', function() {
+            const csrfToken = document.querySelector('[name=csrfmiddlewaretoken]').value;
+            
+            fetch("{% url 'display:toggle_camera' %}", {
+                method: 'POST',
+                headers: {
+                    'X-CSRFToken': csrfToken,
+                    'Content-Type': 'application/json',
+                },
+                credentials: 'same-origin'
+            })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                return response.json();
+            })
+            .then(data => {
+                if (data.error) {
+                    throw new Error(data.error);
+                }
+                updateUI(data.camera_is_active);
+                document.getElementById('cameraStatus').textContent = data.camera_is_active ? 'Aktif' : 'Kapalı';
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('Kamera kontrolü sırasında bir hata oluştu: ' + error.message);
+            });
+        });
+    
+        // Gerçek zamanlı saat güncellemesi
+        function updateClock() {
+            const now = new Date();
+            document.getElementById('current-time').textContent = 
+                `${now.toLocaleTimeString()} ${now.toLocaleDateString()}`;
+        }
+    
+        // Hata yakalama
+        videoFeed.addEventListener('error', () => {
+            cameraOffMessage.style.display = 'block';
+            statusBadge.className = 'status-badge bg-danger text-white';
+        });
+    
+        // Sayfa yüklendiğinde çalışacaklar
+        document.addEventListener('DOMContentLoaded', function() {
+            setInterval(updateClock, 1000);
+            updateClock();
+            
+            // İlk yüklemede kamera durumunu kontrol et
+            checkCameraState();
+            
+            // Her 30 saniyede bir kamera durumunu kontrol et
+            setInterval(checkCameraState, 30000);
+        });
+    })();
+    </script>

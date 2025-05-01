@@ -1,0 +1,59 @@
+{% load static %}
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+      const ctxMissingEq = document.getElementById('missingEquipmentChart');
+      if (ctxMissingEq) {
+          ctxMissingEq.getContext('2d');
+          const missingEquipmentChart = new Chart(ctxMissingEq, {
+              type: 'pie',
+              data: {
+                  labels: {{ missing_equipment_labels|safe }},
+                  datasets: [{
+                      label: 'Eksik Ekipman Sayısı',
+                      data: {{ missing_equipment_data|safe }},
+                      backgroundColor: [
+                          'rgba(255, 99, 132, 0.7)', // Kırmızımsı
+                          'rgba(54, 162, 235, 0.7)', // Mavi
+                          'rgba(255, 206, 86, 0.7)', // Sarı
+                          'rgba(75, 192, 192, 0.7)', // Yeşilimsi Mavi
+                          'rgba(153, 102, 255, 0.7)', // Mor
+                          'rgba(255, 159, 64, 0.7)'  // Turuncu
+                          // İhtiyaç olursa daha fazla renk eklenebilir
+                      ],
+                      borderColor: [
+                          'rgba(255, 99, 132, 1)',
+                          'rgba(54, 162, 235, 1)',
+                          'rgba(255, 206, 86, 1)',
+                          'rgba(75, 192, 192, 1)',
+                          'rgba(153, 102, 255, 1)',
+                          'rgba(255, 159, 64, 1)'
+                      ],
+                      borderWidth: 1
+                  }]
+              },
+              options: {
+                  responsive: true,
+                  maintainAspectRatio: false,
+                  plugins: {
+                      legend: {
+                          position: 'top', // Etiketleri üste al
+                      },
+                      tooltip: {
+                          callbacks: {
+                              label: function(context) {
+                                  let label = context.label || '';
+                                  if (label) {
+                                      label += ': ';
+                                  }
+                                  if (context.parsed !== null) {
+                                      label += context.parsed + ' kez raporlandı';
+                                  }
+                                  return label;
+                              }
+                          }
+                      }
+                  }
+              }
+          });
+      }
+    });
