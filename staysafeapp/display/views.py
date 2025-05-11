@@ -89,6 +89,10 @@ except AttributeError:
     logger.warning("cv2.data.haarcascades bulunamadı. Cascade yolu manuel olarak ayarlanmalı veya static klasörüne konulmalı.")
     CASCADE_PATH = os.path.join(STATIC_DIR, 'haarcascade_frontalface_default.xml') # Statik klasördeki cascade kullanılacak
 
+# OpenCV DNN Yüz Tespiti Model Dosyaları
+DNN_PROTOTXT_PATH = os.path.join(STATIC_DIR, 'deploy.prototxt.txt')
+DNN_MODEL_PATH = os.path.join(STATIC_DIR, 'res10_300x300_ssd_iter_140000.caffemodel')
+
 # ArcFace için eklenen dosya yolları
 ARCFACE_MODEL_PATH = os.path.join(MODELS_DIR, 'ArcFaceResNet_epoch18_bs8_acc99.1.pth')
 CLASS_NAMES_PATH = os.path.join(MODELS_DIR, 'class_names.json')
@@ -133,26 +137,38 @@ class FaceRecognitionSystem:
     def __init__(self):
         self.method = FACE_RECOGNITION_METHOD
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.model_loaded = False
+        self.model_loaded = False # Bu, ArcFace/LBPH tanıma modelinin durumunu belirtir
         self.names = {} # LBPH için {id: name}, ArcFace için {index: name}
         self.cam = None
+        self.dnn_face_detector = None # DNN yüz tespit modeli için
 
-        # Ortak: Yüz tespiti için cascade
-        if not os.path.exists(CASCADE_PATH):
-             logger.error(f"Yüz tespiti için cascade dosyası yüklenemedi: {CASCADE_PATH}")
-             self.face_cascade = None
+        # OpenCV DNN Yüz Tespit Modelini Yükle
+        if not os.path.exists(DNN_PROTOTXT_PATH) or not os.path.exists(DNN_MODEL_PATH):
+            logger.error(f"DNN yüz tespit model dosyaları bulunamadı: Prototxt='{DNN_PROTOTXT_PATH}', Model='{DNN_MODEL_PATH}'")
         else:
-            self.face_cascade = cv2.CascadeClassifier(CASCADE_PATH)
+            try:
+                self.dnn_face_detector = cv2.dnn.readNetFromCaffe(DNN_PROTOTXT_PATH, DNN_MODEL_PATH)
+                logger.info("OpenCV DNN yüz tespit modeli başarıyla yüklendi.")
+            except Exception as e:
+                logger.error(f"OpenCV DNN yüz tespit modeli yüklenirken hata: {e}")
+                self.dnn_face_detector = None
 
-        # Modele özel yüklemeler
+        # Haar Cascade yüklemesi kaldırıldı/yorumlandı. Artık DNN kullanılacak.
+        # if not os.path.exists(CASCADE_PATH):
+        #      logger.error(f"Yüz tespiti için cascade dosyası yüklenemedi: {CASCADE_PATH}")
+        #      self.face_cascade = None
+        # else:
+        #     self.face_cascade = cv2.CascadeClassifier(CASCADE_PATH)
+
+        # Modele özel yüklemeler (ArcFace/LBPH tanıma modelleri)
         try:
             if self.method == 'lbph':
                 self.recognizer = cv2.face.LBPHFaceRecognizer_create()
-                self.load_lbph_model()
+                self.load_lbph_model() # Bu self.model_loaded'ı ayarlar
                 self.load_lbph_names()
             elif self.method == 'arcface':
                 self.recognizer = None # ArcFace için OpenCV recognizer kullanılmıyor
-                self.load_arcface_model()
+                self.load_arcface_model() # Bu self.model_loaded'ı ayarlar
                 self.load_arcface_class_names() # Class index -> name
                 # ArcFace için gerekli dönüşümler
                 self.transform = T.Compose([
@@ -167,38 +183,7 @@ class FaceRecognitionSystem:
             logger.exception(f"{self.method} modeli yüklenirken hata oluştu")
             self.model_loaded = False
 
-    def load_lbph_model(self):
-        """LBPH modelini (.yml) yükler."""
-        if not os.path.exists(TRAINER_FILE):
-            logger.warning(f"LBPH Trainer dosyası bulunamadı: {TRAINER_FILE}. Yüz tanıma yapılamayacak.")
-            return
-        try:
-            self.recognizer.read(TRAINER_FILE)
-            self.model_loaded = True
-            logger.info("LBPH yüz tanıma modeli (trainer.yml) başarıyla yüklendi.")
-        except cv2.error as e:
-             logger.error(f"LBPH Trainer dosyası ({TRAINER_FILE}) okunurken OpenCV hatası: {e}. Dosya bozuk veya uyumsuz olabilir.")
-        except Exception as e:
-            logger.error(f"LBPH Trainer dosyası ({TRAINER_FILE}) yüklenirken beklenmedik hata: {e}")
-
-    def load_lbph_names(self):
-        """LBPH için ID-İsim eşleşmelerini JSON dosyasından yükler."""
-        if not os.path.exists(NAMES_FILE):
-            logger.warning(f"LBPH Names dosyası bulunamadı: {NAMES_FILE}. İsimler 'Unknown' olarak gösterilecek.")
-            self.names = {}
-            return
-        try:
-            with open(NAMES_FILE, 'r', encoding='utf-8') as fs:
-                content = fs.read().strip()
-                if content:
-                    self.names = json.loads(content) # { "id_str": "name" }
-                    logger.info(f"LBPH İsim eşleşmeleri ({NAMES_FILE}) yüklendi: {self.names}")
-                else:
-                    logger.warning(f"LBPH Names dosyası ({NAMES_FILE}) boş.")
-                    self.names = {}
-        except Exception as e:
-            logger.error(f"LBPH Names dosyası ({NAMES_FILE}) yüklenirken hata: {e}")
-            self.names = {}
+    
 
     def load_arcface_model(self):
         """ArcFace ResNet modelini (.pth) yükler ve sınıf sayısı uyumluluğunu kontrol eder."""
@@ -312,11 +297,19 @@ class FaceRecognitionSystem:
             logger.warning("Kamera zaten başlatılmış.")
             return True
         try:
-            self.cam = cv2.VideoCapture(CAMERA['index'])
+            # self.cam = cv2.VideoCapture(CAMERA['index']) # ESKİ HALİ
+            # YENİ HALİ: CAP_DSHOW backend'ini dene
+            logger.info(f"Kamera {CAMERA['index']} CAP_DSHOW backend'i ile başlatılıyor...")
+            self.cam = cv2.VideoCapture(CAMERA['index'] + cv2.CAP_DSHOW)
+            
             if not self.cam.isOpened():
-                logger.error(f"Webcam ({CAMERA['index']}) açılamadı.")
-                self.cam = None
-                return False
+                # Eğer CAP_DSHOW ile açılamazsa, varsayılana geri dönmeyi deneyebiliriz
+                logger.warning(f"Webcam ({CAMERA['index']} + CAP_DSHOW) açılamadı. Varsayılan backend deneniyor...")
+                self.cam = cv2.VideoCapture(CAMERA['index'])
+                if not self.cam.isOpened():
+                    logger.error(f"Webcam ({CAMERA['index']}) varsayılan backend ile de açılamadı.")
+                    self.cam = None
+                    return False
 
             self.cam.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA['width'])
             self.cam.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA['height'])
@@ -332,80 +325,163 @@ class FaceRecognitionSystem:
             return False
 
     def recognize_faces(self, img):
-        """Verilen görüntüdeki yüzü, seçilen yönteme göre tanır."""
+        """Verilen görüntüdeki yüzü, DNN kullanarak tespit eder ve seçilen yönteme göre tanır, yüz koordinatlarını döndürür."""
         name = "Unknown"
         confidence_score = 0
+        recognized_face_coords_in_roi = None # Tespit edilen yüzün img içindeki (x,y,w,h) koordinatları
 
-        if not self.model_loaded:
-             return name, confidence_score # Model yoksa direkt Unknown dön
+        # Yüz *tanıma* modeli yüklü mü kontrol et (ArcFace veya LBPH için)
+        if self.method == 'arcface' and not self.model_loaded:
+             logger.warning("ArcFace tanıma modeli yüklenmediği için yüz tanıma yapılamıyor.")
+             return name, confidence_score, recognized_face_coords_in_roi
+        # LBPH için model yükleme durumu kendi bloğunda ayrıca kontrol edilecek.
 
-        if self.face_cascade is None:
-            logger.warning("Face cascade yüklenmediği için yüz tespiti yapılamıyor.")
-            return name, confidence_score
+        # DNN yüz *tespit* modeli yüklü mü kontrol et
+        if self.dnn_face_detector is None:
+            logger.warning("DNN yüz tespit modeli yüklenmediği için yüz tespiti yapılamıyor.")
+            return name, confidence_score, recognized_face_coords_in_roi
 
         try:
-            # 1. Yüz Tespiti (Her iki yöntem için ortak)
-            if len(img.shape) == 3 and img.shape[2] == 3:
-                 gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            elif len(img.shape) == 2:
-                 gray = img
-            else:
-                 logger.warning(f"Beklenmedik görüntü formatı: shape={img.shape}")
-                 return "Error", 0
+            if img is None or img.size == 0:
+                logger.warning("recognize_faces fonksiyonuna gelen görüntü (img) boş veya geçersiz.")
+                return "Error", 0, None
 
-            faces = self.face_cascade.detectMultiScale(
-                gray,
-                scaleFactor=FACE_DETECTION['scale_factor'],
-                minNeighbors=FACE_DETECTION['min_neighbors'],
-                minSize=FACE_DETECTION['min_size']
-            )
+            (h_roi, w_roi) = img.shape[:2]
+            if h_roi == 0 or w_roi == 0:
+                logger.warning(f"recognize_faces içinde geçersiz ROI boyutları: {w_roi}x{h_roi}. Görüntü: {img.shape}")
+                return "Error", 0, None
 
-            if len(faces) > 0:
-                faces = sorted(faces, key=lambda f: f[2]*f[3], reverse=True)
-                x, y, w, h = faces[0]
-                face_roi_bgr = img[y:y+h, x:x+w] # Renkli ROI alalım (ArcFace için lazım)
-                face_roi_gray = gray[y:y+h, x:x+w]
+            # Giriş görüntüsünden (img, yani person_roi) blob oluştur
+            # Model 300x300 BGR imaj bekler. Ortalama çıkarma değerleri (104.0, 117.0, 123.0) BGR içindir.
+            blob = cv2.dnn.blobFromImage(cv2.resize(img, (300, 300)), 1.0,
+                                         (300, 300), (104.0, 117.0, 123.0),
+                                         swapRB=False, crop=False)
 
-                if face_roi_bgr.size == 0 or face_roi_gray.size == 0:
-                    logger.warning("Tespit edilen yüz ROI'si boş.")
-                    return name, confidence_score
+            self.dnn_face_detector.setInput(blob)
+            detections = self.dnn_face_detector.forward() # shape: (1, 1, N, 7)
 
-                elif self.method == 'arcface':
+            best_detection_confidence = 0.0 # DNN tespit güveni için
+            best_face_box = None # img (person_roi) içinde (x,y,w,h)
+
+            # Tespitler üzerinde döngü
+            for i in range(0, detections.shape[2]):
+                confidence = detections[0, 0, i, 2] # Tespitin güven skoru
+
+                if confidence > 0.5: # DNN tespit güven eşiği
+                    # Kutu koordinatlarını orijinal ROI boyutuna ölçekle
+                    # detections[0,0,i,3:7] -> (startX, startY, endX, endY) normalize edilmiş (0-1 aralığında)
+                    box_rel_x1 = detections[0, 0, i, 3]
+                    box_rel_y1 = detections[0, 0, i, 4]
+                    box_rel_x2 = detections[0, 0, i, 5]
+                    box_rel_y2 = detections[0, 0, i, 6]
+
+                    # Mutlak koordinatları img (person_roi) içinde hesapla
+                    x = int(box_rel_x1 * w_roi)
+                    y = int(box_rel_y1 * h_roi)
+                    # DNN x2, y2 verir, bu yüzden width = (x2-x1)*w_roi, height = (y2-y1)*h_roi
+                    w = int((box_rel_x2 - box_rel_x1) * w_roi)
+                    h = int((box_rel_y2 - box_rel_y1) * h_roi)
+
+                    # Pozitif genişlik ve yükseklik sağla, koordinatları sınırla
+                    x = max(0, x)
+                    y = max(0, y)
+                    w = max(0, w)
+                    h = max(0, h)
+
+                    if x + w > w_roi: w = w_roi - x # ROI sınırlarını aşmamasını sağla
+                    if y + h > h_roi: h = h_roi - y # ROI sınırlarını aşmamasını sağla
+                    
+                    if w > 0 and h > 0: # Geçerli bir kutu mu?
+                        if confidence > best_detection_confidence:
+                            best_detection_confidence = confidence
+                            best_face_box = (x, y, w, h)
+
+            if best_face_box:
+                x, y, w, h = best_face_box
+                recognized_face_coords_in_roi = (x, y, w, h) # img (person_roi) içindeki koordinatlar
+                
+                # Yüz ROI'sini (BGR) çıkar
+                face_roi_bgr = img[y:y+h, x:x+w]
+
+                if face_roi_bgr.size == 0:
+                    logger.warning("DNN ile tespit edilen yüz ROI'si (face_roi_bgr) boş.")
+                    return name, confidence_score, recognized_face_coords_in_roi # Koordinatlar hala None olabilir
+
+                # Şimdi seçilen yönteme göre yüzü TANIMA (ArcFace veya LBPH)
+                if self.method == 'arcface':
+                    # self.model_loaded zaten en başta kontrol edildi ArcFace için.
                     try:
-                        # Görüntüyü hazırla (PIL -> Transform -> Tensor)
                         face_pil = Image.fromarray(cv2.cvtColor(face_roi_bgr, cv2.COLOR_BGR2RGB))
-                        face_tensor = self.transform(face_pil).unsqueeze(0).to(self.device) # Batch dim ekle
-
-                        # Model çıkarımı
+                        face_tensor = self.transform(face_pil).unsqueeze(0).to(self.device)
                         with torch.no_grad():
                             outputs = self.arcface_model(face_tensor)
                         
-                        # Sonucu işle (Cosine similarity varsayımıyla)
-                        probabilities = torch.softmax(outputs, dim=1) # Veya sadece argmax(outputs)
-                        confidence, predicted_idx = torch.max(probabilities, 1)
+                        probabilities = torch.softmax(outputs, dim=1)
+                        current_confidence_tensor, predicted_idx_tensor = torch.max(probabilities, 1)
                         
-                        predicted_idx = predicted_idx.item()
-                        confidence = confidence.item() * 100 # Yüzdeye çevir
+                        predicted_idx = predicted_idx_tensor.item()
+                        current_confidence = current_confidence_tensor.item() * 100 # ArcFace güveni
 
-                        # Güven eşiği (ArcFace için % olarak)
-                        if confidence > 40: # Eşik değeri (ayarlanabilir)
+                        if current_confidence > 40: # ArcFace tanıma güven eşiği
                             name = self.names.get(predicted_idx, "Unknown")
-                            confidence_score = round(confidence)
+                            confidence_score = round(current_confidence)
                         else:
                             name = "Unknown"
-                            confidence_score = round(confidence)
+                            confidence_score = round(current_confidence)
                             
                     except Exception as pred_err:
-                        logger.exception(f"ArcFace predict sırasında hata oluştu")
+                        logger.exception(f"ArcFace predict sırasında hata oluştu (DNN tespit sonrası)")
                         name = "Error"
-            # else: # Yüz tespit edilemedi
-                # pass
+                
+                elif self.method == 'lbph':
+                    if self.recognizer is None or not self.model_loaded: 
+                        logger.warning("LBPH modeli yüklenmedi veya recognizer None. Tanıma yapılamıyor.")
+                        return name, confidence_score, recognized_face_coords_in_roi
+                    try:
+                        # LBPH gri tonlamalı resim bekler
+                        if len(face_roi_bgr.shape) == 3 and face_roi_bgr.shape[2] == 3:
+                             gray_face_for_lbph = cv2.cvtColor(face_roi_bgr, cv2.COLOR_BGR2GRAY)
+                        elif len(face_roi_bgr.shape) == 2: # Zaten gri ise (normalde BGR olmalı)
+                             gray_face_for_lbph = face_roi_bgr
+                        else:
+                             logger.warning(f"LBPH için beklenmedik yüz ROI formatı: {face_roi_bgr.shape}")
+                             return "Error", 0, recognized_face_coords_in_roi
 
+                        if gray_face_for_lbph.size == 0:
+                            logger.warning("LBPH için gri tonlamalı yüz ROI'si boş.")
+                            return "Error", 0, recognized_face_coords_in_roi
+                            
+                        label, conf = self.recognizer.predict(gray_face_for_lbph) # LBPH conf (uzaklık)
+                        
+                        # LBPH'de düşük conf daha iyi. % olarak göstermek için çevir.
+                        # 100'lük bir eşik (trainer.yml'deki max uzaklık)
+                        if conf < 100: 
+                            name_candidate = self.names.get(str(label)) # LBPH isimleri {id_string: name}
+                            if name_candidate:
+                                name = name_candidate
+                                confidence_score = round(100 - conf) # Yüzdeye çevir
+                            else:
+                                name = "Unknown" # Etiket names.json'da yok
+                                confidence_score = round(100 - conf)
+                        else:
+                            name = "Unknown"
+                            confidence_score = round(100 - conf) # Düşük güven skoru olacak
+                    except cv2.error as cv2_lbph_err:
+                        logger.exception(f"LBPH predict sırasında OpenCV hatası: {cv2_lbph_err}")
+                        name = "Error"
+                    except Exception as pred_err:
+                        logger.exception(f"LBPH predict sırasında genel hata: {pred_err}")
+                        name = "Error"
+            # else: DNN ile yeterli güven skoruna sahip yüz tespit edilemedi, recognized_face_coords_in_roi None kalır
+
+        except cv2.error as cv2_dnn_err: # cv2.dnn kaynaklı hataları yakala
+            logger.error(f"OpenCV DNN (blob/forward) hatası (recognize_faces): {cv2_dnn_err}", exc_info=True)
+            name = "Error" # recognized_face_coords_in_roi None kalır
         except Exception as e:
-            logger.exception(f"Yüz tanıma genel hatası")
-            name = "Error"
+            logger.exception(f"Yüz tanıma (recognize_faces with DNN) genel hatası")
+            name = "Error" # recognized_face_coords_in_roi None kalır
 
-        return name, confidence_score
+        return name, confidence_score, recognized_face_coords_in_roi # recognized_face_coords_in_roi, img içindeki koordinatlardır
 
 
 # --- Frame İşleyici Sınıfı ---
@@ -475,7 +551,7 @@ class FrameProcessor:
                     self.result_queue.put((original_frame, results), timeout=0.5)
                 except queue.Full:
                     logger.warning("Sonuç kuyruğu (result_queue) dolu. Bir sonuç atlanıyor.")
-                    # Eski sonucu atıp yenisini ekleyebiliriz ama senkronizasyon bozulabilir
+                    # Eski sonucu atıp yenisini ekleyebilirizndi ama senkronizasyon bozulabilir
                     # Şimdilik sadece uyarı verilecek
                     pass
 
@@ -486,7 +562,7 @@ class FrameProcessor:
             except Exception as e:
                 # Hata durumunda logla ve devam etmeye çalış
                 logger.error(f"Frame işleme hatası (_process_frames): {e}", exc_info=True) # Hata detayını logla
-                # Hata durumunda result_queue'ya None gönderilebilir.
+             # Hata durumunda result_queue'ya None gönderilebilir.
                 try:
                      # Orijinal frame'i None result ile gönderelim ki akış devam etsin
                     self.result_queue.put((original_frame, None), timeout=0.1)
@@ -868,64 +944,108 @@ class StaySafeApp:
                 has_helmet, has_vest = self._check_ppe_for_person(person_box, all_boxes, frame.shape)
                 is_safe = has_helmet and has_vest
 
-                # 4. Yüz Tanıma (Güvensizse veya her zaman? Şimdilik güvensizse)
-                recognized_name = "Unknown"
-                confidence = 0
-                if not is_safe:
-                    recognized_name, confidence = self.face_recognizer.recognize_faces(person_roi)
-                    self.predicted_names.append(recognized_name)
-                else:
-                     self.predicted_names.append("Safe") # Güvenli ise özel bir değer ekleyebiliriz
+                # 4. Yüz Tespiti (her zaman) ve Yüz Tanıma (gerekirse)
+                # recognize_faces her zaman çağrılır; yüz bulursa koordinatları, tanırsa ismi döndürür.
+                # recognized_face_coords_in_roi eski isimdi, şimdi face_coords_for_blur kullanalım.
+                potential_name, potential_confidence, face_coords_for_blur = \
+                    self.face_recognizer.recognize_faces(person_roi)
 
-                # 5. Kişi ID'sini Belirle
-                if recognized_name not in ["Unknown", "Error", None]:
-                    person_id = recognized_name
+                recognized_name_for_logic = "Unknown" # Raporlama ve takip için kullanılacak ana isim
+                confidence_for_logic = 0
+
+                if not is_safe:
+                    # Güvensizse, ArcFace sonuçlarını mantık için kullan
+                    recognized_name_for_logic = potential_name
+                    confidence_for_logic = potential_confidence
+                    self.predicted_names.append(recognized_name_for_logic) 
+                else:
+                    # Güvenliyse, ArcFace sonucunu mantık için kullanma ama listede belirt
+                    if face_coords_for_blur: # Yüz tespit edildiyse (ArcFace sonucu ne olursa olsun)
+                        # İsteğe bağlı: Güvenli ama tanınan bir yüz varsa bunu da loglayabilir veya predicted_names'e ekleyebiliriz.
+                        # Örneğin: self.predicted_names.append(f"Safe ({potential_name})")
+                        self.predicted_names.append("Safe (Face Detected)")
+                    else:
+                        self.predicted_names.append("Safe")
+
+                # 5. Kişi ID'sini Belirle (recognized_name_for_logic'e göre)
+                # Önceki ID mantığı devam edebilir, sadece recognized_name -> recognized_name_for_logic oldu
+                if recognized_name_for_logic not in ["Unknown", "Error", None]:
+                    person_id = recognized_name_for_logic
                 else:
                     center_x, center_y = (x1 + x2) // 2, (y1 + y2) // 2
-                    person_id = f"unknown_at_{center_x}_{center_y}"
+                    person_id = f"person_at_{center_x}_{center_y}"
+                    # Eğer yüz tespit edildi ama tanınmadıysa (güvenli veya güvensiz olabilir)
+                    if face_coords_for_blur and (recognized_name_for_logic in ["Unknown", "Error", None]):
+                        person_id += "_faced"
 
                 processed_person_ids_in_frame.add(person_id)
 
                 # 6. Takipçiyi Güncelle ve Raporlama İhtiyacını Kontrol Et
-                should_create_report, missing_equipment_list = self._update_unsafe_tracker(person_id, is_safe, recognized_name, person_roi)
+                # recognized_name_for_logic'i kullanarak rapor oluşturma kararı verilir.
+                should_create_report, _ = self._update_unsafe_tracker(person_id, is_safe, recognized_name_for_logic, person_roi)
 
                 # 7. Rapor Oluştur (Gerekliyse)
                 if should_create_report:
-                    # Eksik ekipmanları tekrar belirle (raporlama anı için)
                     missing_equipment_list_report = []
                     if not has_helmet: missing_equipment_list_report.append("Baret")
                     if not has_vest: missing_equipment_list_report.append("Yelek")
 
                     last_seen_frame_for_report = self.unsafe_persons_tracker[person_id].get('last_seen_frame')
                     if last_seen_frame_for_report is not None:
-                         self.create_safety_report(person_id, recognized_name, last_seen_frame_for_report, missing_equipment_list_report)
+                         self.create_safety_report(person_id, recognized_name_for_logic, last_seen_frame_for_report, missing_equipment_list_report)
                     else:
                          logger.warning(f"{person_id} için rapor oluşturulamadı: Son frame bulunamadı.")
-                         # Başarısız olursa 'reported' flag'ini geri alabiliriz?
-                         self.unsafe_persons_tracker[person_id]['reported'] = False
-                         self.unsafe_persons_tracker[person_id]['last_report_time'] = 0
+                         if person_id in self.unsafe_persons_tracker:
+                            self.unsafe_persons_tracker[person_id]['reported'] = False
+                            self.unsafe_persons_tracker[person_id]['last_report_time'] = 0
+
+                # YÜZÜ BULANIKLAŞTIRMA (CANLI AKIŞTA) - Her zaman face_coords_for_blur kullanılır
+                if face_coords_for_blur: # Eğer recognize_faces bir yüz koordinatı döndürdüyse
+                    fx, fy, fw, fh = face_coords_for_blur
+                    abs_face_x = x1 + fx 
+                    abs_face_y = y1 + fy
+                    abs_face_x_start = max(0, abs_face_x)
+                    abs_face_y_start = max(0, abs_face_y)
+                    abs_face_x_end = min(frame.shape[1], abs_face_x + fw)
+                    abs_face_y_end = min(frame.shape[0], abs_face_y + fh)
+
+                    if abs_face_x_start < abs_face_x_end and abs_face_y_start < abs_face_y_end:
+                        face_region_to_blur = frame[abs_face_y_start:abs_face_y_end, abs_face_x_start:abs_face_x_end]
+                        if face_region_to_blur.size > 0:
+                            blurred_region = cv2.GaussianBlur(face_region_to_blur, (31, 31), 30)
+                            frame[abs_face_y_start:abs_face_y_end, abs_face_x_start:abs_face_x_end] = blurred_region
 
                 # 8. Çizim
                 box_color = (0, 255, 0) if is_safe else (0, 0, 255)
                 status_prefix = "Safe" if is_safe else "Unsafe"
                 person_status_text = status_prefix
-                if recognized_name not in ["Unknown", "Error", None]:
-                    person_status_text += f" ({recognized_name} - {confidence}%)"
-                elif recognized_name == "Error":
-                    person_status_text += " (Face Rec Error)"
-                elif not is_safe: # Güvensiz ve tanınamayan
-                    person_status_text += " (Unknown)"
-                # Cooldown veya gecikme bilgisini ekle
+                
+                # Çizim için gösterilecek isim ve durum:
+                if not is_safe:
+                    # Güvensiz durum: recognized_name_for_logic (ArcFace sonucu) kullanılır
+                    if recognized_name_for_logic not in ["Unknown", "Error", None]:
+                        person_status_text += f" ({recognized_name_for_logic} - {int(confidence_for_logic)}%)"
+                    elif recognized_name_for_logic == "Error":
+                        person_status_text += " (Face Rec Error)"
+                    elif face_coords_for_blur: # Güvensiz, ArcFace tanıyamadı ama yüz var
+                        person_status_text += " (Unknown Face)"
+                    else: # Güvensiz, ArcFace tanıyamadı ve yüz de yok (cascade bulamadı)
+                        person_status_text += " (No Face Detected)"
+                else: # Güvenli durum
+                    if face_coords_for_blur: # Güvenli ve yüz tespit edildi (ArcFace sonucu kullanılmıyor)
+                        person_status_text += " (Face Detected)"
+                    # else: Sadece "Safe" yazar (güvenli ve yüz tespit edilemedi)
+                
+                # Cooldown veya gecikme bilgisini ekle (sadece güvensizse ve takipteyse)
                 if not is_safe and person_id in self.unsafe_persons_tracker:
                     tracker_entry = self.unsafe_persons_tracker[person_id]
                     time_elapsed = current_time - tracker_entry['timestamp']
                     if tracker_entry['reported']:
-                        remaining_cooldown = int(60 - (current_time - tracker_entry['last_report_time']))
+                        remaining_cooldown = int(60 - (current_time - tracker_entry.get('last_report_time', 0)))
                         if remaining_cooldown > 0:
                              person_status_text += f" (Raporlandi - {remaining_cooldown}s)"
-                        else:
-                             person_status_text += " (Raporlandi)"
-                    elif time_elapsed > 1:
+                        # Raporlandı ve cooldown bittiyse ek bir şey yazmaya gerek yok, tekrar raporlanabilir.
+                    elif time_elapsed > 1: # Henüz raporlanmadı ve gecikme süresi işliyor
                          person_status_text += f" ({int(time_elapsed)}s)"
 
                 self._draw_person_status(frame, person_box, person_status_text, box_color)
@@ -1002,16 +1122,40 @@ class StaySafeApp:
 
         logger.info("Video akış döngüsü başlıyor...")
         cap = self.face_recognizer.cam
+        # YENİ LOGLAMA
+        if cap is not None:
+            logger.info(f"get_video_stream başlangıcında cap.isOpened(): {cap.isOpened()}")
+        else:
+            logger.error("get_video_stream başlangıcında cap (kamera nesnesi) None!")
+            # Bu durumda zaten ilk baştaki `if not self.camera_active...` bloğu yakalamalı ama ek kontrol.
+            # Kullanıcıya bilgi vermek için boş frame gönderelim ve çıkalım.
+            error_frame = np.zeros((CAMERA['height'], CAMERA['width'], 3), dtype=np.uint8)
+            cv2.putText(error_frame, "Camera Obj. Error", (int(CAMERA['width']/2)-150, int(CAMERA['height']/2)), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+            ret_encode, buffer = cv2.imencode('.jpg', error_frame)
+            if ret_encode:
+                yield (b'--frame\r\n'
+                       b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+            return
+
         sent_camera_off_frame = False # Flag to send the off frame only once
+        consecutive_read_failures = 0 # Yeni: Arka arkaya okuma hatası sayacı
+        MAX_CONSECUTIVE_FAILURES = 30 # Yeni: Maksimum ardışık hata sayısı (yaklaşık 3 saniye @ 0.1s sleep)
 
         while self.camera_active: # Döngü kontrolü
             # 1. Kameradan Frame Oku
             ret, frame = cap.read()
             if not ret:
-                logger.warning("Kameradan frame okunamadı. Sonraki frame deneniyor...")
+                consecutive_read_failures += 1
+                logger.warning(f"Kameradan frame okunamadı ({consecutive_read_failures}/{MAX_CONSECUTIVE_FAILURES}). Sonraki frame deneniyor...")
+                if consecutive_read_failures >= MAX_CONSECUTIVE_FAILURES:
+                    logger.error(f"Kameradan {MAX_CONSECUTIVE_FAILURES} kez ardışık frame okunamadı. Akış sonlandırılıyor.")
+                    self.camera_active = False # Kamerayı mantıksal olarak kapat
+                    # İsteğe bağlı: toggle_camera çağrısı ile tam kapatma denenebilir ama lock mekanizmasına dikkat
+                    break # Döngüyü sonlandır
                 time.sleep(0.1) # Kısa bir süre bekle
                 continue # Döngünün başına dön, sonraki frame'i dene
-
+            
+            consecutive_read_failures = 0 # Başarılı okuma, sayacı sıfırla
             frame = cv2.flip(frame, 1) # Görüntüyü aynala
 
             # 2. Frame'i İşleme Kuyruğuna Gönder
@@ -1051,10 +1195,33 @@ class StaySafeApp:
             except queue.Empty:
                 time.sleep(0.02)
                 continue
+            # Bu blok güncellenecek
             except Exception as e:
-                 logger.error(f"Video akışı ana döngü hatası: {e}", exc_info=True)
-                 # Hata durumunda döngüyü kırmak iyi olabilir
-                 break # Döngüyü sonlandır
+                 logger.error(f"Video akışı ana döngü hatası (işleme/gönderme sırasında): {e}", exc_info=True)
+                 # Hata oluştuğunda kamera hala açık mı kontrol et
+                 if cap is not None and cap.isOpened():
+                     logger.info("Ana döngüde hata oluştu ancak kamera (cap) hala açık görünüyor.")
+                 elif cap is not None:
+                     logger.warning("Ana döngüde hata oluştu ve kamera (cap) kapalı görünüyor.")
+                 else:
+                     logger.error("Ana döngüde hata oluştu ve kamera nesnesi (cap) None.")
+
+                 # İstemciye bir hata frame'i göndermeyi dene
+                 try:
+                    error_frame = np.zeros((CAMERA['height'], CAMERA['width'], 3), dtype=np.uint8)
+                    # Hata mesajını daha kısa tutalım, çok uzun olabilir
+                    error_type_str = type(e).__name__
+                    cv2.putText(error_frame, "Stream Processing Error", (int(CAMERA['width']/2)-200, int(CAMERA['height']/2)), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,0,255), 2)
+                    cv2.putText(error_frame, error_type_str, (10, CAMERA['height'] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,255), 1)
+                    ret_encode, buffer = cv2.imencode('.jpg', error_frame)
+                    if ret_encode:
+                        yield (b'--frame\r\n'
+                               b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+                 except Exception as inner_e:
+                     logger.error(f"Hata frame'i gönderilirken ek hata oluştu: {inner_e}")
+                 
+                 self.camera_active = False # Döngünün bir sonraki iterasyonda sonlanmasını garantile
+                 # break # Döngü zaten self.camera_active = False ile sonlanacak
 
         # Döngü bitti (self.camera_active False oldu veya hata oluştu)
         logger.info("Video akış döngüsü sona erdi veya kamera kapatıldı.")
@@ -1196,7 +1363,7 @@ def index(request):
      }
      return render(request, 'display/index.html', context)
 
-@login_required # Bu view sadece giriş yapmış kullanıcılar için
+#@login_required # Bu view sadece giriş yapmış kullanıcılar için
 def home(request):
     """Dashboard sayfasını gösterir."""
     app_ready = stay_safe_app is not None

@@ -12,10 +12,12 @@ from torchvision.transforms import v2 as T
 from PIL import Image
 import matplotlib.pyplot as plt
 import argparse
+import torch
+from torchvision.models import Resn
 
 # FaceNet için import
 try:
-    from facenet_pytorch import InceptionResnetV1
+    from torchvision.models import InceptionResnetV1
 except ImportError:
     print("HATA: facenet-pytorch kütüphanesi bulunamadı.")
     print("Lütfen 'pip install facenet-pytorch' komutu ile yükleyin.")

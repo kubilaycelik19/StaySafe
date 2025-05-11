@@ -60,5 +60,10 @@ def remap_class_indices(labels_path, index_mapping):
 
     print("Sınıf indeksleri yeniden atandı!")
 
-#remove_classes_from_labels("helmet_Dataset_Demo/valid/labels", {1, 2})
-remap_class_indices("helmet_Dataset_Demo/valid/labels", {0: 1, 3: 0, 4: 2})
+"""remove_classes_from_labels("C:/Users/celik/Desktop/StaySafe/YOLO/safetyDataset/valid/labels", {1, 2})
+remove_classes_from_labels("C:/Users/celik/Desktop/StaySafe/YOLO/safetyDataset/train/labels", {1, 2})
+remove_classes_from_labels("C:/Users/celik/Desktop/StaySafe/YOLO/safetyDataset/test/labels", {1, 2})"""
+
+remap_class_indices("C:/Users/celik/Desktop/StaySafe/YOLO/safetyDataset/valid/labels", {0: 1, 3: 0, 4: 2})
+remap_class_indices("C:/Users/celik/Desktop/StaySafe/YOLO/safetyDataset/train/labels", {0: 1, 3: 0, 4: 2})
+remap_class_indices("C:/Users/celik/Desktop/StaySafe/YOLO/safetyDataset/test/labels", {0: 1, 3: 0, 4: 2})

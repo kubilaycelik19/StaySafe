@@ -1,0 +1,6 @@
+train: C:/Users/celik/Desktop/StaySafe/YOLO/safetyDataset/train/images
+val: C:/Users/celik/Desktop/StaySafe/YOLO/safetyDataset/valid/images
+test: C:/Users/celik/Desktop/StaySafe/YOLO/safetyDataset/test/images
+
+nc: 3
+names: ['person','helmet', 'vest']
