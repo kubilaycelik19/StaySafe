@@ -297,19 +297,24 @@ class FaceRecognitionSystem:
             logger.warning("Kamera zaten başlatılmış.")
             return True
         try:
-            # self.cam = cv2.VideoCapture(CAMERA['index']) # ESKİ HALİ
-            # YENİ HALİ: CAP_DSHOW backend'ini dene
-            logger.info(f"Kamera {CAMERA['index']} CAP_DSHOW backend'i ile başlatılıyor...")
-            self.cam = cv2.VideoCapture(CAMERA['index'] + cv2.CAP_DSHOW)
-            
+            self.cam = cv2.VideoCapture(CAMERA['index'])
             if not self.cam.isOpened():
-                # Eğer CAP_DSHOW ile açılamazsa, varsayılana geri dönmeyi deneyebiliriz
-                logger.warning(f"Webcam ({CAMERA['index']} + CAP_DSHOW) açılamadı. Varsayılan backend deneniyor...")
-                self.cam = cv2.VideoCapture(CAMERA['index'])
-                if not self.cam.isOpened():
-                    logger.error(f"Webcam ({CAMERA['index']}) varsayılan backend ile de açılamadı.")
-                    self.cam = None
-                    return False
+                logger.error(f"Webcam ({CAMERA['index']}) açılamadı.")
+                self.cam = None
+                return False
+
+            self.cam.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA['width'])
+            self.cam.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA['height'])
+            actual_width = self.cam.get(cv2.CAP_PROP_FRAME_WIDTH)
+            actual_height = self.cam.get(cv2.CAP_PROP_FRAME_HEIGHT)
+            logger.info(f"Kamera başarıyla başlatıldı. İstenen: {CAMERA['width']}x{CAMERA['height']}, Alınan: {int(actual_width)}x{int(actual_height)}")
+            return True
+        except Exception as e:
+            logger.error(f"Kamera başlatma hatası: {e}")
+            if self.cam is not None:
+                self.cam.release()
+            self.cam = None
+            return False
 
             self.cam.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA['width'])
             self.cam.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA['height'])
