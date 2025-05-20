@@ -13,32 +13,30 @@ from ultralytics import YOLO
 from django.http import StreamingHttpResponse, JsonResponse
 from django.shortcuts import render
 from django.views.decorators.csrf import csrf_exempt
-from django.core.files.base import ContentFile # Rapor görüntüsü kaydetmek için
-from django.core.files.storage import default_storage # Dosya işlemleri için
-from reports.models import EmployeeReport # Report modeli de import edildi
-from django.utils import timezone # Zaman dilimi için
-from datetime import timedelta # Zaman farkı hesaplamak için
-from django.db.models.functions import TruncDate, Concat # Tarihe göre gruplamak için, Concat eklendi
-from django.db.models import Count, F, Value # F ve Value eklendi
-from django.contrib.auth.decorators import login_required # login_required import et
+from django.core.files.base import ContentFile
+from django.core.files.storage import default_storage
+from reports.models import EmployeeReport
+from django.utils import timezone
+from datetime import timedelta
+from django.db.models.functions import TruncDate, Concat
+from django.db.models import Count, F, Value
+from django.contrib.auth.decorators import login_required
 
-# ArcFace için eklenenler
+# ArcFace için gerekli kütüphaneler
 import torch.nn as nn
-from torchvision import models # torchvision.models import et
+from torchvision import models
 from torchvision.transforms import v2 as T
 from PIL import Image
 
-# Logging ayarları
+# Loglama ayarlarını yapıyorum
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# --- Yüz Tanıma Yöntemi Seçimi ---
-# Değerler: 'lbph' veya 'arcface'
-#FACE_RECOGNITION_METHOD = input('Yüz tanıma yöntemi seçin (lbph/arcface): ')
+# Yüz tanıma yöntemini seçiyorum - ArcFace kullanacağım
 FACE_RECOGNITION_METHOD = 'arcface'
 logger.info(f"Kullanılacak yüz tanıma yöntemi: {FACE_RECOGNITION_METHOD}")
 
-
+# Employee modelini import etmeyi deniyorum
 try:
     from employees.models import Employee
 except ImportError:
@@ -47,57 +45,54 @@ except ImportError:
 
 warnings.filterwarnings('ignore', category=UserWarning)
 
-# --- Ayarlar ve Sabitler ---
-# Projenin ana dizinini (manage.py'nin olduğu yer)
-# Bu yapıya göre BASE_DIR, 'staysafeapp' klasörü
+# Proje dizinlerini ayarlıyorum
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STATIC_DIR = os.path.join(BASE_DIR, 'static')
-MODELS_DIR = os.path.join(STATIC_DIR, 'models') # ArcFace modelinin kaydedildiği yer
+MODELS_DIR = os.path.join(STATIC_DIR, 'models')
 logger.info(f"Proje Ana Dizini (BASE_DIR): {BASE_DIR}")
 logger.info(f"Statik Dosya Dizini (STATIC_DIR): {STATIC_DIR}")
 logger.info(f"Modeller Dizini (MODELS_DIR): {MODELS_DIR}")
 
-
-# Kamera ayarları
+# Kamera ayarlarını yapıyorum
 CAMERA = {
-    'index': 0,  # Default camera
+    'index': 0,
     'width': 640,
     'height': 480
 }
 
-# Yüz tanıma ayarları
+# Yüz tespiti için ayarlar
 FACE_DETECTION = {
     'scale_factor': 1.3,
     'min_neighbors': 5,
     'min_size': (30, 30)
 }
 
-# Dosya yolları (STATIC_DIR kullanarak)
+# Model ve dosya yollarını ayarlıyorum
 MODEL_PATH = os.path.join(STATIC_DIR, "Yolo11n_50_epoch.pt")
-# DB_PATH = os.path.join(STATIC_DIR, "Workers.db") # Kaldırıldı
 NAMES_FILE = os.path.join(STATIC_DIR, 'names.json')
 TRAINER_FILE = os.path.join(STATIC_DIR, 'trainer.yml')
-# Haarcascade dosyasını OpenCV'nin kurulu olduğu yerden alındı
+
+# Haarcascade dosyasını bulmaya çalışıyorum
 try:
     CASCADE_PATH = os.path.join(cv2.data.haarcascades, 'haarcascade_frontalface_default.xml')
     if not os.path.exists(CASCADE_PATH):
         logger.error(f"Haarcascade dosyası bulunamadı: {CASCADE_PATH}")
-        CASCADE_PATH = os.path.join(STATIC_DIR, 'haarcascade_frontalface_default.xml') # Statik klasörde de arandı
+        CASCADE_PATH = os.path.join(STATIC_DIR, 'haarcascade_frontalface_default.xml')
         logger.warning(f"Statik klasördeki cascade kullanılacak: {CASCADE_PATH}")
-
 except AttributeError:
-    logger.warning("cv2.data.haarcascades bulunamadı. Cascade yolu manuel olarak ayarlanmalı veya static klasörüne konulmalı.")
-    CASCADE_PATH = os.path.join(STATIC_DIR, 'haarcascade_frontalface_default.xml') # Statik klasördeki cascade kullanılacak
+    logger.warning("cv2.data.haarcascades bulunamadı. Cascade yolu manuel olarak ayarlanmalı.")
+    CASCADE_PATH = os.path.join(STATIC_DIR, 'haarcascade_frontalface_default.xml')
 
-# OpenCV DNN Yüz Tespiti Model Dosyaları
+# OpenCV DNN model dosyalarının yollarını ayarlıyorum
 DNN_PROTOTXT_PATH = os.path.join(STATIC_DIR, 'deploy.prototxt.txt')
 DNN_MODEL_PATH = os.path.join(STATIC_DIR, 'res10_300x300_ssd_iter_140000.caffemodel')
 
-# ArcFace için eklenen dosya yolları
+# ArcFace model dosyalarının yollarını ayarlıyorum
 ARCFACE_MODEL_PATH = os.path.join(MODELS_DIR, 'ArcFaceResNet_epoch18_bs8_acc99.1.pth')
 CLASS_NAMES_PATH = os.path.join(MODELS_DIR, 'class_names.json')
 
-REPORT_DELAY = 10 # Raporlama öncesi bekleme süresi (saniye)
+# Raporlama gecikmesini ayarlıyorum (saniye)
+REPORT_DELAY = 10
 
 # --- ArcFace Model Tanımı (ResNet Tabanlı - BN ve Embedding ile) ---
 class ArcFaceResNetModel(nn.Module):
@@ -105,15 +100,15 @@ class ArcFaceResNetModel(nn.Module):
         super(ArcFaceResNetModel, self).__init__()
         self.backbone = models.resnet18(pretrained=pretrained)
         in_features = self.backbone.fc.in_features
-        self.backbone.fc = nn.Identity() # Son katmanı kaldır
+        self.backbone.fc = nn.Identity()  # Son katmanı kaldırıyorum
 
-        # BN katmanını tekrar ekle
+        # Batch Normalization katmanını ekliyorum
         self.bn = nn.BatchNorm1d(in_features)
 
-        # embedding_layer'ı tut
+        # Embedding katmanını tanımlıyorum
         self.embedding_layer = nn.Linear(in_features, embedding_dim)
 
-        # ArcFace sınıflandırma ağırlığı
+        # ArcFace sınıflandırma ağırlıklarını ayarlıyorum
         self.num_classes = num_classes
         self.embedding_dim = embedding_dim
         self.weight = nn.Parameter(torch.FloatTensor(num_classes, self.embedding_dim))
@@ -121,13 +116,10 @@ class ArcFaceResNetModel(nn.Module):
 
     def forward(self, x):
         features = self.backbone(x)
-        # BN katmanını uygula
         features = self.bn(features)
-        # embedding_layer'ı BN'den sonra uygula
         features = self.embedding_layer(features)
         features = nn.functional.normalize(features, p=2, dim=1)
 
-        # Sınıflandırma çıktısı
         weight = nn.functional.normalize(self.weight, p=2, dim=1)
         cos = nn.functional.linear(features, weight)
         return cos
@@ -137,12 +129,12 @@ class FaceRecognitionSystem:
     def __init__(self):
         self.method = FACE_RECOGNITION_METHOD
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.model_loaded = False # Bu, ArcFace/LBPH tanıma modelinin durumunu belirtir
-        self.names = {} # LBPH için {id: name}, ArcFace için {index: name}
+        self.model_loaded = False
+        self.names = {}
         self.cam = None
-        self.dnn_face_detector = None # DNN yüz tespit modeli için
+        self.dnn_face_detector = None
 
-        # OpenCV DNN Yüz Tespit Modelini Yükle
+        # DNN yüz tespit modelini yüklüyorum
         if not os.path.exists(DNN_PROTOTXT_PATH) or not os.path.exists(DNN_MODEL_PATH):
             logger.error(f"DNN yüz tespit model dosyaları bulunamadı: Prototxt='{DNN_PROTOTXT_PATH}', Model='{DNN_MODEL_PATH}'")
         else:
@@ -153,24 +145,16 @@ class FaceRecognitionSystem:
                 logger.error(f"OpenCV DNN yüz tespit modeli yüklenirken hata: {e}")
                 self.dnn_face_detector = None
 
-        # Haar Cascade yüklemesi kaldırıldı/yorumlandı. Artık DNN kullanılacak.
-        # if not os.path.exists(CASCADE_PATH):
-        #      logger.error(f"Yüz tespiti için cascade dosyası yüklenemedi: {CASCADE_PATH}")
-        #      self.face_cascade = None
-        # else:
-        #     self.face_cascade = cv2.CascadeClassifier(CASCADE_PATH)
-
-        # Modele özel yüklemeler (ArcFace/LBPH tanıma modelleri)
+        # Seçilen yönteme göre modeli yüklüyorum
         try:
             if self.method == 'lbph':
                 self.recognizer = cv2.face.LBPHFaceRecognizer_create()
-                self.load_lbph_model() # Bu self.model_loaded'ı ayarlar
+                self.load_lbph_model()
                 self.load_lbph_names()
             elif self.method == 'arcface':
-                self.recognizer = None # ArcFace için OpenCV recognizer kullanılmıyor
-                self.load_arcface_model() # Bu self.model_loaded'ı ayarlar
-                self.load_arcface_class_names() # Class index -> name
-                # ArcFace için gerekli dönüşümler
+                self.recognizer = None
+                self.load_arcface_model()
+                self.load_arcface_class_names()
                 self.transform = T.Compose([
                     T.Resize((224, 224)),
                     T.ToTensor(),
@@ -498,9 +482,6 @@ class FrameProcessor:
         self.width = width
         self.running = False
         self.thread = None
-        # self.last_result = None # Cache mekanizması kaldırıldı
-        # self.last_result_time = 0
-        # self.result_cache_time = 0.1
 
     def start(self):
         if not self.running:
@@ -508,20 +489,16 @@ class FrameProcessor:
             self.thread = threading.Thread(target=self._process_frames, name="FrameProcessorThread")
             self.thread.daemon = True
             self.thread.start()
-            logger.info("FrameProcessor iş parçacığı başlatıldı.")
+            logger.info("Frame işleme thread'i başlatıldı.")
 
     def stop(self):
         if self.running:
             self.running = False
             if self.thread is not None:
-                # Kuyrukları temizlemeden önce thread'in bitmesi bekleniyor
-                self.thread.join(timeout=1.0) # 1 saniye bekle
+                self.thread.join(timeout=1.0)
                 if self.thread.is_alive():
-                    logger.warning("FrameProcessor thread'i join ile durmadı.")
-                    # Burada belki daha zorlayıcı bir durdurma mekanizması gerekebilir
-                    # ancak daemon thread olduğu için ana program bitince kapanacaktır.
+                    logger.warning("Frame işleme thread'i düzgün kapanmadı.")
 
-                # Thread durduktan sonra kuyrukları temizle
                 while not self.frame_queue.empty():
                     try: self.frame_queue.get_nowait()
                     except queue.Empty: break
@@ -529,60 +506,41 @@ class FrameProcessor:
                     try: self.result_queue.get_nowait()
                     except queue.Empty: break
 
-                logger.info("FrameProcessor iş parçacığı durduruldu ve kuyruklar temizlendi.")
+                logger.info("Frame işleme thread'i durduruldu ve kuyruklar temizlendi.")
         self.thread = None
-
 
     def _process_frames(self):
         while self.running:
             try:
-                # Timeout ile frame al, bloklamayı azaltır
                 original_frame = self.frame_queue.get(timeout=0.5)
-
-                # Frame'i yeniden boyutlandır (YOLO için)
                 frame_resized = imutils.resize(original_frame, width=self.width)
+                results = self.model.track(frame_resized, verbose=False, device=stay_safe_app.device)
 
-                # YOLO modelini çalıştır
-                # stream=True daha verimli olabilir ama sonuçları yönetmek farklılaşır
-                # stream=True parametresi, YOLO'nun sonuçları daha verimli bir şekilde işlemesini sağlar.
-                # Bu parametre, özellikle video akışı gibi sürekli frame işleme durumlarında
-                # bellek kullanımını optimize eder ve performansı artırır.
-                # Ancak sonuçların yapısı farklılaşabilir, bu yüzden dikkatli kullanılmalıdır.
-                results = self.model.track(frame_resized, verbose=False, device=stay_safe_app.device) # Cihazı belirt
-
-                # Sonucu orijinal frame ile birlikte kuyruğa koy
-                # Burası kritik, eğer result_queue doluysa takılma olabilir
                 try:
                     self.result_queue.put((original_frame, results), timeout=0.5)
                 except queue.Full:
-                    logger.warning("Sonuç kuyruğu (result_queue) dolu. Bir sonuç atlanıyor.")
-                    # Eski sonucu atıp yenisini ekleyebilirizndi ama senkronizasyon bozulabilir
-                    # Şimdilik sadece uyarı verilecek
+                    logger.warning("Sonuç kuyruğu dolu. Bir sonuç atlanıyor.")
                     pass
 
             except queue.Empty:
-                # Frame kuyruğu boşsa kısa bir süre bekle
                 time.sleep(0.01)
                 continue
             except Exception as e:
-                # Hata durumunda logla ve devam etmeye çalış
-                logger.error(f"Frame işleme hatası (_process_frames): {e}", exc_info=True) # Hata detayını logla
-             # Hata durumunda result_queue'ya None gönderilebilir.
+                logger.error(f"Frame işleme hatası: {e}", exc_info=True)
                 try:
-                     # Orijinal frame'i None result ile gönderelim ki akış devam etsin
                     self.result_queue.put((original_frame, None), timeout=0.1)
                 except queue.Full:
-                     pass # Doluysa yapacak bir şey yok
-                except NameError: # original_frame tanımlanmadan hata oluşmuşsa
-                     pass
+                    pass
+                except NameError:
+                    pass
 
 
 # --- Ana Uygulama Sınıfı ---
 class StaySafeApp:
     def __init__(self, model_path: str, width=640, height=480):
         self.model_path = model_path
-        self.width = width # YOLO'nun işleyeceği genişlik
-        self.height = height # Kamera yüksekliği (bilgi amaçlı)
+        self.width = width
+        self.height = height
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         logger.info(f"Kullanılan cihaz: {self.device}")
 
@@ -595,9 +553,7 @@ class StaySafeApp:
 
         if self.device.type == 'cuda':
             torch.backends.cudnn.benchmark = True
-            # torch.backends.cudnn.deterministic = False # Genellikle False daha hızlıdır
 
-        # Kuyruk boyutlarını artırılabilir. Makine hızına bağlı. Test edilecek.
         self.frame_queue = queue.Queue(maxsize=5)
         self.result_queue = queue.Queue(maxsize=5)
 
@@ -605,16 +561,15 @@ class StaySafeApp:
             self.frame_queue,
             self.result_queue,
             self.model,
-            self.width # FrameProcessor'a işlenecek genişliği ver
+            self.width
         )
 
-        self.camera_active = False # Başlangıçta kamera kapalı
-        self.predicted_names = [] # Son frame'de tanınan isimleri tutar
-        self.worker_info_cache = {} # Çalışan bilgilerini cache'le
-        self.unsafe_persons_tracker = {} # Ekipmansız kişileri takip etmek için {person_id: {'timestamp': float, 'reported': bool, 'last_seen_frame': np.ndarray}}
-        self.report_delay = REPORT_DELAY # Raporlama gecikmesi
-        self._toggle_lock = threading.Lock() # Toggle işlemi için kilit
-
+        self.camera_active = False
+        self.predicted_names = []
+        self.worker_info_cache = {}
+        self.unsafe_persons_tracker = {}
+        self.report_delay = REPORT_DELAY
+        self._toggle_lock = threading.Lock()
 
     def create_yolo_model(self):
         """YOLO modelini yükler."""
@@ -1254,37 +1209,27 @@ class StaySafeApp:
 stay_safe_app = None
 try:
     logger.info("StaySafeApp uygulaması başlatılıyor...")
-    # stay_safe_app = StaySafeApp(model_path=MODEL_PATH, db_path=DB_PATH) # db_path kaldırıldı
     stay_safe_app = StaySafeApp(model_path=MODEL_PATH)
     logger.info("StaySafeApp uygulaması başarıyla başlatıldı.")
-    # Başlangıçta kamerayı otomatik açmak için:
-    # try:
-    #    stay_safe_app.toggle_camera()
-    # except Exception as auto_start_err:
-    #    logger.error(f"Başlangıçta kamera otomatik açılamadı: {auto_start_err}")
-
 except FileNotFoundError as e:
     logger.error(f"Uygulama başlatılamadı - Gerekli dosya bulunamadı: {e}", exc_info=True)
-    # stay_safe_app None kalacak, view'lar bunu kontrol etmeli
 except Exception as e:
     logger.error(f"Uygulama başlatılırken kritik hata: {e}", exc_info=True)
-    # stay_safe_app None kalacak
 
 # --- Dashboard Veri Yardımcı Fonksiyonları ---
 
 def _get_dashboard_summary_data():
-    """Dashboard özet kartları için verileri alır."""
+    """Dashboard özet verilerini hazırlıyorum."""
     today = timezone.now().date()
     total_reports = EmployeeReport.objects.count()
     today_reports = EmployeeReport.objects.filter(timestamp__date=today).count()
-    # İleride buraya başka özetler eklenebilir
     return {
         'total_reports': total_reports,
         'today_reports': today_reports,
     }
 
 def _get_daily_report_chart_data(days=7):
-    """Son 'days' güne ait günlük rapor sayılarını grafik için hazırlar."""
+    """Son günlerin rapor sayılarını grafik için hazırlıyorum."""
     today = timezone.now().date()
     start_date = today - timedelta(days=days-1)
     reports_per_day = EmployeeReport.objects.filter(timestamp__date__gte=start_date)\
@@ -1305,7 +1250,7 @@ def _get_daily_report_chart_data(days=7):
     return json.dumps(chart_labels), json.dumps(chart_data)
 
 def _get_employee_report_chart_data(top_n=5):
-    """En çok raporlanan çalışanları (ilk 'top_n') grafik için hazırlar."""
+    """En çok raporlanan çalışanları grafik için hazırlıyorum."""
     employee_reports = EmployeeReport.objects.filter(employee__isnull=False)\
                                              .values('employee__name', 'employee__surname')\
                                              .annotate(
@@ -1318,21 +1263,17 @@ def _get_employee_report_chart_data(top_n=5):
     chart_data = [item['report_count'] for item in employee_reports]
     return json.dumps(chart_labels), json.dumps(chart_data)
 
-# Yeni fonksiyon: Eksik Ekipman Dağılım Verisi
 def _get_missing_equipment_chart_data():
-    """Eksik ekipman türlerine göre rapor sayısını hesaplar."""
+    """Eksik ekipman türlerine göre rapor sayılarını hesaplıyorum."""
     try:
-        # 'missing_equipment' alanı boş veya null olmayan raporları al
-        # ve ekipman türüne göre gruplayıp say
         missing_equipment_counts = EmployeeReport.objects.exclude(missing_equipment__isnull=True).exclude(missing_equipment__exact='') \
                                         .values('missing_equipment') \
                                         .annotate(count=Count('id')) \
-                                        .order_by('-count') # Çoktan aza doğru sırala
+                                        .order_by('-count')
 
         labels = [item['missing_equipment'] for item in missing_equipment_counts]
         data = [item['count'] for item in missing_equipment_counts]
 
-        # Eğer hiç eksik ekipman raporu yoksa boş listeler döndür
         if not labels:
             return [], []
 
@@ -1344,33 +1285,30 @@ def _get_missing_equipment_chart_data():
 # --- Django Views ---
 
 def check_app_status(func):
-    """View fonksiyonları için stay_safe_app'in durumunu kontrol eden decorator."""
+    """Uygulama durumunu kontrol eden decorator."""
     def wrapper(request, *args, **kwargs):
         if stay_safe_app is None:
             logger.error(f"{func.__name__} çağrıldı ancak uygulama başlatılamamış.")
-            # Hata durumuna uygun bir yanıt döndür
             if request.accepts('application/json'):
-                return JsonResponse({'status': 'error', 'error': 'Uygulama düzgün başlatılamadı.'}, status=503) # Service Unavailable
+                return JsonResponse({'status': 'error', 'error': 'Uygulama düzgün başlatılamadı.'}, status=503)
             else:
-                # Belki bir hata şablonu gösterilebilir
-                 return render(request, 'display/error.html', {'error_message': 'Uygulama şu anda kullanılamıyor.'})
+                return render(request, 'display/error.html', {'error_message': 'Uygulama şu anda kullanılamıyor.'})
         return func(request, *args, **kwargs)
     return wrapper
 
 def index(request):
-     # Uygulama durumunu kontrol edelim (decorator kullanmadan)
-     app_ready = stay_safe_app is not None
-     camera_status = stay_safe_app.camera_active if app_ready else False
-     context = {
-         'camera_is_active': camera_status,
-         'app_ready': app_ready,
-         'error_message': None if app_ready else "Uygulama başlatılamadı. Lütfen kayıtları kontrol edin."
-     }
-     return render(request, 'display/index.html', context)
+    """Ana sayfa view'ı."""
+    app_ready = stay_safe_app is not None
+    camera_status = stay_safe_app.camera_active if app_ready else False
+    context = {
+        'camera_is_active': camera_status,
+        'app_ready': app_ready,
+        'error_message': None if app_ready else "Uygulama başlatılamadı. Lütfen kayıtları kontrol edin."
+    }
+    return render(request, 'display/index.html', context)
 
-#@login_required # Bu view sadece giriş yapmış kullanıcılar için
 def home(request):
-    """Dashboard sayfasını gösterir."""
+    """Dashboard sayfası view'ı."""
     app_ready = stay_safe_app is not None
     context = {
         'app_ready': app_ready,
@@ -1380,28 +1318,16 @@ def home(request):
     if not app_ready:
         return render(request, 'display/home.html', context)
 
-    # Özet veriler
-    summary_data = _get_dashboard_summary_data() # Sözlüğü al
-
-    # Günlük rapor grafiği verileri
+    summary_data = _get_dashboard_summary_data()
     chart_labels, chart_data = _get_daily_report_chart_data()
-
-    # Çalışan rapor grafiği verileri
     employee_chart_labels, employee_chart_data = _get_employee_report_chart_data()
-
-    # Eksik Ekipman Grafik Verileri
     missing_equipment_labels, missing_equipment_data = _get_missing_equipment_chart_data()
-    logger.info(f"Missing Equipment Labels: {missing_equipment_labels}")
-    logger.info(f"Missing Equipment Data: {missing_equipment_data}")
-
-
-    # Son raporlar (limit=5)
     recent_reports = EmployeeReport.objects.all().order_by('-timestamp')[:5]
 
     context = {
         'app_ready': True,
-        'total_reports': summary_data.get('total_reports', 0), # Sözlükten al
-        'today_reports': summary_data.get('today_reports', 0), # Sözlükten al
+        'total_reports': summary_data.get('total_reports', 0),
+        'today_reports': summary_data.get('today_reports', 0),
         'camera_is_active': stay_safe_app.camera_active if app_ready else False,
         'chart_labels': chart_labels,
         'chart_data': chart_data,
@@ -1416,21 +1342,18 @@ def home(request):
 
 @check_app_status
 def video_feed(request):
-    """Video akışını sağlar."""
+    """Video akışı view'ı."""
     if not stay_safe_app.camera_active:
-        #logger.info("Video akışı istendi ancak kamera kapalı.")
-        # Kamera kapalıyken boş bir akış veya statik bir görüntü döndür
-        return StreamingHttpResponse(content_type="multipart/x-mixed-replace; boundary=frame") # Boş akış döndürür
+        return StreamingHttpResponse(content_type="multipart/x-mixed-replace; boundary=frame")
 
-    # recognition=True ile nesne tespiti ve yüz tanıma akışını başlat
     return StreamingHttpResponse(stay_safe_app.get_video_stream(recognition=True),
                                  content_type="multipart/x-mixed-replace; boundary=frame")
 
 @csrf_exempt
 @check_app_status
 def toggle_camera(request):
-     """Kamera durumunu değiştirir."""
-     if request.method == 'POST': # Sadece POST isteklerini kabul et
+    """Kamera durumunu değiştiren view."""
+    if request.method == 'POST':
         try:
             is_active = stay_safe_app.toggle_camera()
             return JsonResponse({
@@ -1438,26 +1361,23 @@ def toggle_camera(request):
                 'camera_is_active': is_active
             })
         except Exception as e:
-            logger.error(f"Kamera durumu değiştirilirken view hatası: {e}", exc_info=True)
+            logger.error(f"Kamera durumu değiştirilirken hata: {e}", exc_info=True)
             return JsonResponse({
                 'status': 'error',
                 'error': f"Kamera durumu değiştirilemedi: {str(e)}"
             }, status=500)
-     else:
-        return JsonResponse({'status': 'error', 'error': 'Invalid request method'}, status=405)
-
+    else:
+        return JsonResponse({'status': 'error', 'error': 'Geçersiz istek metodu'}, status=405)
 
 @csrf_exempt
 @check_app_status
 def get_worker_info(request):
-    """Son tanınan çalışanın bilgisini döndürür."""
-    if request.method == 'GET': # Sadece GET isteklerini kabul et
+    """Çalışan bilgilerini döndüren view."""
+    if request.method == 'GET':
         if not stay_safe_app.camera_active:
             return JsonResponse({'status': 'info', 'message': 'Kamera kapalı.'})
 
-        # En son tanınan geçerli ismi al
         last_valid_name = None
-        # predicted_names listesini tersten tarayarak ilk geçerli ismi bul
         for name in reversed(stay_safe_app.predicted_names):
             if name and name not in ["Unknown", "Error"]:
                 last_valid_name = name
@@ -1467,24 +1387,15 @@ def get_worker_info(request):
             worker_info = stay_safe_app.findWorker(last_valid_name)
             return JsonResponse({'status': 'success', 'worker_info': worker_info})
         else:
-             # Eğer listede hiç geçerli isim yoksa veya liste boşsa
-             last_prediction = stay_safe_app.predicted_names[-1] if stay_safe_app.predicted_names else "None"
-             return JsonResponse({'status': 'info', 'message': f'Geçerli çalışan tanınmadı. Son tahmin: {last_prediction}'})
+            last_prediction = stay_safe_app.predicted_names[-1] if stay_safe_app.predicted_names else "None"
+            return JsonResponse({'status': 'info', 'message': f'Geçerli çalışan tanınmadı. Son tahmin: {last_prediction}'})
     else:
-         return JsonResponse({'status': 'error', 'error': 'Invalid request method'}, status=405)
+        return JsonResponse({'status': 'error', 'error': 'Geçersiz istek metodu'}, status=405)
 
 def report_list(request):
-    """
-    Veritabanındaki tüm güvenlik raporlarını listeler.
-    """
-    reports = EmployeeReport.objects.all() # Tüm raporları al (ordering model meta'da tanımlı)
+    """Rapor listesi view'ı."""
+    reports = EmployeeReport.objects.all()
     context = {
         'reports': reports
     }
     return render(request, 'reports/report_list.html', context)
-
-# İleride rapor detaylarını görmek için bir view daha eklenebilir:
-# def report_detail(request, report_id):
-#     report = get_object_or_404(EmployeeReport, pk=report_id)
-#     context = {'report': report}
-#     return render(request, 'reports/report_detail.html', context)
