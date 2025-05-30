@@ -3,6 +3,7 @@ import os, sys           # Dosya ve sistem işlemleri için
 import cv2               # OpenCV, görüntü işleme için
 import numpy as np       # Sayısal işlemler için
 import math              # Matematiksel işlemler için
+import threading         # Thread-safe erişim için
 
 def face_confidence(face_distance, face_match_threshold=0.6):
     """Yüz mesafesini güven skoruna çeviriyorum."""
@@ -19,11 +20,87 @@ def face_confidence(face_distance, face_match_threshold=0.6):
 
 def preprocess_image(image):
     """Görüntüyü ön işlemden geçiriyorum."""
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    # Histogram eşitleme ve gürültü giderme istenirse açılabilir
-    """equalized = cv2.equalizeHist(gray)
-    denoised = cv2.fastNlMeansDenoising(equalized)"""
-    return cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+    if len(image.shape) == 3 and image.shape[2] == 3:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        # Histogram eşitleme ve gürültü giderme istenirse açılabilir
+        """equalized = cv2.equalizeHist(gray)
+        denoised = cv2.fastNlMeansDenoising(equalized)"""
+        return cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+    return image
+
+class FaceRecognitionLib:
+    """face_recognition kütüphanesi ile yüz tanıma işlemlerini yöneten sınıf."""
+    def __init__(self, faces_dir):
+        self.faces_dir = faces_dir
+        self.known_face_encodings = []
+        self.known_face_names = []
+        self.lock = threading.Lock()  # Thread-safe erişim için
+        self.encode_faces()
+
+    def encode_faces(self):
+        """Faces klasöründeki yüzleri kodluyorum."""
+        with self.lock:
+            self.known_face_encodings = []
+            self.known_face_names = []
+            if not os.path.exists(self.faces_dir):
+                print(f"Faces klasörü bulunamadı: {self.faces_dir}")
+                return
+            for person_folder in os.listdir(self.faces_dir):
+                person_path = os.path.join(self.faces_dir, person_folder)
+                if not os.path.isdir(person_path):
+                    continue
+                person_encodings = []
+                for image_file in os.listdir(person_path):
+                    if not image_file.lower().endswith((".png", ".jpg", ".jpeg")):
+                        continue
+                    image_path = os.path.join(person_path, image_file)
+                    try:
+                        face_image = face_recognition.load_image_file(image_path)
+                        # face_image = preprocess_image(face_image)  # RGB olduğu için gerek yok
+                        encodings = face_recognition.face_encodings(face_image)
+                        if encodings:
+                            person_encodings.append(encodings[0])
+                    except Exception as e:
+                        print(f"{image_path} kodlanırken hata: {e}")
+                if person_encodings:
+                    avg_encoding = np.mean(person_encodings, axis=0)
+                    self.known_face_encodings.append(avg_encoding)
+                    self.known_face_names.append(person_folder)
+            print(f"Yüz kodlamaları tamamlandı! Bilinen yüzler: {self.known_face_names}")
+
+    def recognize_face(self, img_bgr):
+        """Bir BGR görüntüdeki ilk yüzü tanır. (isim, güven, koordinat) döndürür."""
+        with self.lock:
+            name = "Unknown"
+            confidence = 0
+            face_coords = None
+            if img_bgr is None or img_bgr.size == 0:
+                return name, confidence, face_coords
+            # BGR -> RGB
+            rgb_img = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+            # Yüz konumlarını bul
+            face_locations = face_recognition.face_locations(rgb_img)
+            if not face_locations:
+                return name, confidence, face_coords
+            # İlk yüzü al
+            top, right, bottom, left = face_locations[0]
+            face_coords = (left, top, right-left, bottom-top)
+            face_encoding = face_recognition.face_encodings(rgb_img, [face_locations[0]])
+            if not face_encoding:
+                return name, confidence, face_coords
+            face_encoding = face_encoding[0]
+            # Bilinenlerle karşılaştır
+            matches = face_recognition.compare_faces(self.known_face_encodings, face_encoding)
+            face_distances = face_recognition.face_distance(self.known_face_encodings, face_encoding)
+            if len(face_distances) == 0:
+                return name, confidence, face_coords
+            best_match_index = np.argmin(face_distances)
+            if matches[best_match_index]:
+                name = self.known_face_names[best_match_index]
+                confidence = face_confidence(face_distances[best_match_index])
+            else:
+                confidence = face_confidence(face_distances[best_match_index])
+            return name, confidence, face_coords
 
 class FaceRecognition:
     """Yüz tanıma işlemlerini yöneten ana sınıf."""

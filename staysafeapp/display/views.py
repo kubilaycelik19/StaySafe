@@ -33,7 +33,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 # Yüz tanıma yöntemini seçiyorum - ArcFace kullanacağım
-FACE_RECOGNITION_METHOD = 'arcface'
+FACE_RECOGNITION_METHOD = 'arcface'  # 'arcface', 'face_recognition' seçenekleri
 logger.info(f"Kullanılacak yüz tanıma yöntemi: {FACE_RECOGNITION_METHOD}")
 
 # Employee modelini import etmeyi deniyorum
@@ -133,6 +133,8 @@ class FaceRecognitionSystem:
         self.names = {}
         self.cam = None
         self.dnn_face_detector = None
+        # face_recognition yöntemi için
+        self.fr_lib = None
 
         # DNN yüz tespit modelini yüklüyorum
         if not os.path.exists(DNN_PROTOTXT_PATH) or not os.path.exists(DNN_MODEL_PATH):
@@ -147,11 +149,7 @@ class FaceRecognitionSystem:
 
         # Seçilen yönteme göre modeli yüklüyorum
         try:
-            if self.method == 'lbph':
-                self.recognizer = cv2.face.LBPHFaceRecognizer_create()
-                self.load_lbph_model()
-                self.load_lbph_names()
-            elif self.method == 'arcface':
+            if self.method == 'arcface':
                 self.recognizer = None
                 self.load_arcface_model()
                 self.load_arcface_class_names()
@@ -160,9 +158,16 @@ class FaceRecognitionSystem:
                     T.ToTensor(),
                     T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
                 ])
+            elif self.method == 'face_recognition':
+                # face_recog.py'den FaceRecognitionLib'i import et
+                from face_recog import FaceRecognitionLib
+                faces_dir = os.path.join(STATIC_DIR, 'faces')
+                self.fr_lib = FaceRecognitionLib(faces_dir)
+                self.recognizer = None
+                self.model_loaded = True
             else:
                 logger.error(f"Geçersiz yüz tanıma yöntemi: {self.method}")
-                self.model_loaded = False
+            self.model_loaded = False
         except Exception as e:
             logger.exception(f"{self.method} modeli yüklenirken hata oluştu")
             self.model_loaded = False
@@ -315,17 +320,21 @@ class FaceRecognitionSystem:
 
     def recognize_faces(self, img):
         """Verilen görüntüdeki yüzü, DNN kullanarak tespit eder ve seçilen yönteme göre tanır, yüz koordinatlarını döndürür."""
+        # face_recognition yöntemi için doğrudan ROI'de yüz ara ve tanı
+        if self.method == 'face_recognition' and self.fr_lib is not None:
+            # img: person ROI (BGR)
+            name, confidence, face_coords = self.fr_lib.recognize_face(img)
+            return name, confidence, face_coords
+
+        # Diğer yöntemler için mevcut kodu kullan
         name = "Unknown"
         confidence_score = 0
-        recognized_face_coords_in_roi = None # Tespit edilen yüzün img içindeki (x,y,w,h) koordinatları
+        recognized_face_coords_in_roi = None
 
-        # Yüz *tanıma* modeli yüklü mü kontrol et (ArcFace veya LBPH için)
+        # ArcFace ve LBPH için eski kodun devamı
         if self.method == 'arcface' and not self.model_loaded:
-             logger.warning("ArcFace tanıma modeli yüklenmediği için yüz tanıma yapılamıyor.")
-             return name, confidence_score, recognized_face_coords_in_roi
-        # LBPH için model yükleme durumu kendi bloğunda ayrıca kontrol edilecek.
-
-        # DNN yüz *tespit* modeli yüklü mü kontrol et
+            logger.warning("ArcFace tanıma modeli yüklenmediği için yüz tanıma yapılamıyor.")
+            return name, confidence_score, recognized_face_coords_in_roi
         if self.dnn_face_detector is None:
             logger.warning("DNN yüz tespit modeli yüklenmediği için yüz tespiti yapılamıyor.")
             return name, confidence_score, recognized_face_coords_in_roi
@@ -340,137 +349,103 @@ class FaceRecognitionSystem:
                 logger.warning(f"recognize_faces içinde geçersiz ROI boyutları: {w_roi}x{h_roi}. Görüntü: {img.shape}")
                 return "Error", 0, None
 
-            # Giriş görüntüsünden (img, yani person_roi) blob oluştur
-            # Model 300x300 BGR imaj bekler. Ortalama çıkarma değerleri (104.0, 117.0, 123.0) BGR içindir.
             blob = cv2.dnn.blobFromImage(cv2.resize(img, (300, 300)), 1.0,
                                          (300, 300), (104.0, 117.0, 123.0),
                                          swapRB=False, crop=False)
 
             self.dnn_face_detector.setInput(blob)
-            detections = self.dnn_face_detector.forward() # shape: (1, 1, N, 7)
+            detections = self.dnn_face_detector.forward()
 
-            best_detection_confidence = 0.0 # DNN tespit güveni için
-            best_face_box = None # img (person_roi) içinde (x,y,w,h)
-
-            # Tespitler üzerinde döngü
+            best_detection_confidence = 0.0
+            best_face_box = None
             for i in range(0, detections.shape[2]):
-                confidence = detections[0, 0, i, 2] # Tespitin güven skoru
-
-                if confidence > 0.5: # DNN tespit güven eşiği
-                    # Kutu koordinatlarını orijinal ROI boyutuna ölçekle
-                    # detections[0,0,i,3:7] -> (startX, startY, endX, endY) normalize edilmiş (0-1 aralığında)
+                confidence = detections[0, 0, i, 2]
+                if confidence > 0.5:
                     box_rel_x1 = detections[0, 0, i, 3]
                     box_rel_y1 = detections[0, 0, i, 4]
                     box_rel_x2 = detections[0, 0, i, 5]
                     box_rel_y2 = detections[0, 0, i, 6]
-
-                    # Mutlak koordinatları img (person_roi) içinde hesapla
                     x = int(box_rel_x1 * w_roi)
                     y = int(box_rel_y1 * h_roi)
-                    # DNN x2, y2 verir, bu yüzden width = (x2-x1)*w_roi, height = (y2-y1)*h_roi
                     w = int((box_rel_x2 - box_rel_x1) * w_roi)
                     h = int((box_rel_y2 - box_rel_y1) * h_roi)
-
-                    # Pozitif genişlik ve yükseklik sağla, koordinatları sınırla
                     x = max(0, x)
                     y = max(0, y)
                     w = max(0, w)
                     h = max(0, h)
-
-                    if x + w > w_roi: w = w_roi - x # ROI sınırlarını aşmamasını sağla
-                    if y + h > h_roi: h = h_roi - y # ROI sınırlarını aşmamasını sağla
-                    
-                    if w > 0 and h > 0: # Geçerli bir kutu mu?
+                    if x + w > w_roi: w = w_roi - x
+                    if y + h > h_roi: h = h_roi - y
+                    if w > 0 and h > 0:
                         if confidence > best_detection_confidence:
                             best_detection_confidence = confidence
                             best_face_box = (x, y, w, h)
 
             if best_face_box:
                 x, y, w, h = best_face_box
-                recognized_face_coords_in_roi = (x, y, w, h) # img (person_roi) içindeki koordinatlar
-                
-                # Yüz ROI'sini (BGR) çıkar
+                recognized_face_coords_in_roi = (x, y, w, h)
                 face_roi_bgr = img[y:y+h, x:x+w]
-
                 if face_roi_bgr.size == 0:
                     logger.warning("DNN ile tespit edilen yüz ROI'si (face_roi_bgr) boş.")
-                    return name, confidence_score, recognized_face_coords_in_roi # Koordinatlar hala None olabilir
-
-                # Şimdi seçilen yönteme göre yüzü TANIMA (ArcFace veya LBPH)
+                    return name, confidence_score, recognized_face_coords_in_roi
                 if self.method == 'arcface':
-                    # self.model_loaded zaten en başta kontrol edildi ArcFace için.
                     try:
                         face_pil = Image.fromarray(cv2.cvtColor(face_roi_bgr, cv2.COLOR_BGR2RGB))
                         face_tensor = self.transform(face_pil).unsqueeze(0).to(self.device)
                         with torch.no_grad():
                             outputs = self.arcface_model(face_tensor)
-                        
                         probabilities = torch.softmax(outputs, dim=1)
                         current_confidence_tensor, predicted_idx_tensor = torch.max(probabilities, 1)
-                        
                         predicted_idx = predicted_idx_tensor.item()
-                        current_confidence = current_confidence_tensor.item() * 100 # ArcFace güveni
-
-                        if current_confidence > 40: # ArcFace tanıma güven eşiği
+                        current_confidence = current_confidence_tensor.item() * 100
+                        if current_confidence > 40:
                             name = self.names.get(predicted_idx, "Unknown")
                             confidence_score = round(current_confidence)
                         else:
                             name = "Unknown"
                             confidence_score = round(current_confidence)
-                            
                     except Exception as pred_err:
                         logger.exception(f"ArcFace predict sırasında hata oluştu (DNN tespit sonrası)")
                         name = "Error"
-                
                 elif self.method == 'lbph':
-                    if self.recognizer is None or not self.model_loaded: 
+                    if self.recognizer is None or not self.model_loaded:
                         logger.warning("LBPH modeli yüklenmedi veya recognizer None. Tanıma yapılamıyor.")
                         return name, confidence_score, recognized_face_coords_in_roi
                     try:
-                        # LBPH gri tonlamalı resim bekler
                         if len(face_roi_bgr.shape) == 3 and face_roi_bgr.shape[2] == 3:
-                             gray_face_for_lbph = cv2.cvtColor(face_roi_bgr, cv2.COLOR_BGR2GRAY)
-                        elif len(face_roi_bgr.shape) == 2: # Zaten gri ise (normalde BGR olmalı)
-                             gray_face_for_lbph = face_roi_bgr
+                            gray_face_for_lbph = cv2.cvtColor(face_roi_bgr, cv2.COLOR_BGR2GRAY)
+                        elif len(face_roi_bgr.shape) == 2:
+                            gray_face_for_lbph = face_roi_bgr
                         else:
-                             logger.warning(f"LBPH için beklenmedik yüz ROI formatı: {face_roi_bgr.shape}")
-                             return "Error", 0, recognized_face_coords_in_roi
-
+                            logger.warning(f"LBPH için beklenmedik yüz ROI formatı: {face_roi_bgr.shape}")
+                            return "Error", 0, recognized_face_coords_in_roi
                         if gray_face_for_lbph.size == 0:
                             logger.warning("LBPH için gri tonlamalı yüz ROI'si boş.")
                             return "Error", 0, recognized_face_coords_in_roi
-                            
-                        label, conf = self.recognizer.predict(gray_face_for_lbph) # LBPH conf (uzaklık)
-                        
-                        # LBPH'de düşük conf daha iyi. % olarak göstermek için çevir.
-                        # 100'lük bir eşik (trainer.yml'deki max uzaklık)
-                        if conf < 100: 
-                            name_candidate = self.names.get(str(label)) # LBPH isimleri {id_string: name}
+                        label, conf = self.recognizer.predict(gray_face_for_lbph)
+                        if conf < 100:
+                            name_candidate = self.names.get(str(label))
                             if name_candidate:
                                 name = name_candidate
-                                confidence_score = round(100 - conf) # Yüzdeye çevir
+                                confidence_score = round(100 - conf)
                             else:
-                                name = "Unknown" # Etiket names.json'da yok
+                                name = "Unknown"
                                 confidence_score = round(100 - conf)
                         else:
                             name = "Unknown"
-                            confidence_score = round(100 - conf) # Düşük güven skoru olacak
+                            confidence_score = round(100 - conf)
                     except cv2.error as cv2_lbph_err:
                         logger.exception(f"LBPH predict sırasında OpenCV hatası: {cv2_lbph_err}")
                         name = "Error"
                     except Exception as pred_err:
                         logger.exception(f"LBPH predict sırasında genel hata: {pred_err}")
                         name = "Error"
-            # else: DNN ile yeterli güven skoruna sahip yüz tespit edilemedi, recognized_face_coords_in_roi None kalır
-
-        except cv2.error as cv2_dnn_err: # cv2.dnn kaynaklı hataları yakala
+        except cv2.error as cv2_dnn_err:
             logger.error(f"OpenCV DNN (blob/forward) hatası (recognize_faces): {cv2_dnn_err}", exc_info=True)
-            name = "Error" # recognized_face_coords_in_roi None kalır
+            name = "Error"
         except Exception as e:
             logger.exception(f"Yüz tanıma (recognize_faces with DNN) genel hatası")
-            name = "Error" # recognized_face_coords_in_roi None kalır
-
-        return name, confidence_score, recognized_face_coords_in_roi # recognized_face_coords_in_roi, img içindeki koordinatlardır
+            name = "Error"
+        return name, confidence_score, recognized_face_coords_in_roi
 
 
 # --- Frame İşleyici Sınıfı ---
@@ -984,7 +959,14 @@ class StaySafeApp:
                 if not is_safe:
                     # Güvensiz durum: recognized_name_for_logic (ArcFace sonucu) kullanılır
                     if recognized_name_for_logic not in ["Unknown", "Error", None]:
-                        person_status_text += f" ({recognized_name_for_logic} - {int(confidence_for_logic)}%)"
+                        # --- HATA DÜZELTME: confidence_for_logic bazen '99.14%' gibi string olabiliyor ---
+                        conf_val = confidence_for_logic
+                        if isinstance(conf_val, str) and '%' in conf_val:
+                            try:
+                                conf_val = float(conf_val.replace('%', '').replace(',', '.'))
+                            except Exception:
+                                conf_val = 0
+                        person_status_text += f" ({recognized_name_for_logic} - {int(round(float(conf_val)))}%)"
                     elif recognized_name_for_logic == "Error":
                         person_status_text += " (Face Rec Error)"
                     elif face_coords_for_blur: # Güvensiz, ArcFace tanıyamadı ama yüz var
