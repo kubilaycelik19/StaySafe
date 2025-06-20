@@ -9,6 +9,7 @@ import threading
 import time
 import json
 import warnings
+import sys
 from ultralytics import YOLO
 from django.http import StreamingHttpResponse, JsonResponse
 from django.shortcuts import render
@@ -26,14 +27,14 @@ from django.contrib.auth.decorators import login_required
 import torch.nn as nn
 from torchvision import models
 from torchvision.transforms import v2 as T
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 
 # Loglama ayarlarını yapıyorum
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # Yüz tanıma yöntemini seçiyorum - ArcFace kullanacağım
-FACE_RECOGNITION_METHOD = 'arcface'  # 'arcface', 'face_recognition' seçenekleri
+FACE_RECOGNITION_METHOD = 'face_recognition'  # 'arcface', 'face_recognition' seçenekleri
 logger.info(f"Kullanılacak yüz tanıma yöntemi: {FACE_RECOGNITION_METHOD}")
 
 # Employee modelini import etmeyi deniyorum
@@ -52,6 +53,62 @@ MODELS_DIR = os.path.join(STATIC_DIR, 'models')
 logger.info(f"Proje Ana Dizini (BASE_DIR): {BASE_DIR}")
 logger.info(f"Statik Dosya Dizini (STATIC_DIR): {STATIC_DIR}")
 logger.info(f"Modeller Dizini (MODELS_DIR): {MODELS_DIR}")
+
+# Türkçe karakterler için font yolu
+FONT_PATH = os.path.join(STATIC_DIR, 'fonts', 'DejaVuSans.ttf')
+if not os.path.exists(FONT_PATH):
+    logger.warning(f"Proje içi font dosyası bulunamadı: {FONT_PATH}. Sistem fontları denenecek.")
+    if sys.platform == "win32":
+        FONT_PATH_FALLBACK = "C:/Windows/Fonts/arial.ttf"
+    else:  # linux, macos
+        FONT_PATH_FALLBACK = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+
+    if os.path.exists(FONT_PATH_FALLBACK):
+        FONT_PATH = FONT_PATH_FALLBACK
+        logger.info(f"Alternatif sistem fontu kullanılacak: {FONT_PATH}")
+    else:
+        FONT_PATH = None
+        logger.error("Hiçbir TrueType font dosyası bulunamadı! Türkçe karakterler düzgün görüntülenmeyebilir.")
+
+
+def draw_turkish_text(img, text, pos, font_path, font_size, text_color_bgr, bg_color_bgr=None):
+    """
+    OpenCV görüntüsüne PIL (Pillow) kütüphanesini kullanarak Türkçe karakter destekli metin yazar.
+    Bu fonksiyon, değiştirilmiş yeni bir görüntü (frame) döndürür.
+    """
+    if not font_path:
+        # Font bulunamazsa, standart cv2.putText ile devam etmeyi dene (sadece ASCII çalışır)
+        cv2.putText(img, text, pos, cv2.FONT_HERSHEY_SIMPLEX, 0.6, text_color_bgr, 2)
+        return img
+
+    try:
+        font = ImageFont.truetype(font_path, font_size)
+    except IOError:
+        font = ImageFont.load_default()
+
+    # OpenCV (BGR) görüntüsünü PIL (RGB) formatına çevir
+    pil_img = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+    draw = ImageDraw.Draw(pil_img)
+
+    text_color_rgb = (text_color_bgr[2], text_color_bgr[1], text_color_bgr[0])
+
+    if bg_color_bgr:
+        try:
+            if hasattr(draw, 'textbbox'):
+                text_box = draw.textbbox(pos, text, font=font)
+            else: # Eski versiyonlar için
+                text_w, text_h = draw.textsize(text, font=font)
+                text_box = (pos[0], pos[1], pos[0] + text_w, pos[1] + text_h)
+
+            bg_color_rgb = (bg_color_bgr[2], bg_color_bgr[1], bg_color_bgr[0])
+            draw.rectangle(text_box, fill=bg_color_rgb)
+        except Exception as e:
+            logger.warning(f"PIL ile arka plan çizilirken hata: {e}")
+
+    draw.text(pos, text, font=font, fill=text_color_rgb)
+
+    return cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+
 
 # Kamera ayarlarını yapıyorum
 CAMERA = {
@@ -820,10 +877,11 @@ class StaySafeApp:
          """Kişi durum metnini ve ana sınırlayıcı kutuyu çizer."""
          x1, y1, x2, y2 = map(int, person_box.xyxy[0])
          cv2.rectangle(frame, (x1, y1), (x2, y2), box_color, 2)
-         (text_width, text_height), baseline = cv2.getTextSize(status_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
-         text_y_status = y1 - 10 if y1 - 10 > text_height else y1 + text_height + 5
-         cv2.rectangle(frame, (x1, text_y_status - text_height - baseline), (x1 + text_width, text_y_status + baseline), (0,0,0), -1)
-         cv2.putText(frame, status_text, (x1, text_y_status), cv2.FONT_HERSHEY_SIMPLEX, 0.6, box_color, 2)
+         
+         text_y_status = y1 - 20 if y1 - 20 > 0 else y1 + 5
+         
+         # Türkçe karakter desteği için yeni fonksiyonu kullan ve değiştirilmiş frame'i döndür
+         return draw_turkish_text(frame, status_text, (x1, text_y_status), FONT_PATH, 16, box_color, bg_color_bgr=(0,0,0))
 
     def _cleanup_stale_trackers(self, processed_person_ids):
         """Bu frame'de görülmeyen eski takipçileri temizler."""
@@ -952,7 +1010,7 @@ class StaySafeApp:
 
                 # 8. Çizim
                 box_color = (0, 255, 0) if is_safe else (0, 0, 255)
-                status_prefix = "Safe" if is_safe else "Unsafe"
+                status_prefix = "Güvenli" if is_safe else "Güvensiz"
                 person_status_text = status_prefix
                 
                 # Çizim için gösterilecek isim ve durum:
@@ -968,14 +1026,14 @@ class StaySafeApp:
                                 conf_val = 0
                         person_status_text += f" ({recognized_name_for_logic} - {int(round(float(conf_val)))}%)"
                     elif recognized_name_for_logic == "Error":
-                        person_status_text += " (Face Rec Error)"
+                        person_status_text += " (Yüz Tanıma Hatası)"
                     elif face_coords_for_blur: # Güvensiz, ArcFace tanıyamadı ama yüz var
-                        person_status_text += " (Unknown Face)"
+                        person_status_text += " (Bilinmeyen Yüz)"
                     else: # Güvensiz, ArcFace tanıyamadı ve yüz de yok (cascade bulamadı)
-                        person_status_text += " (No Face Detected)"
+                        person_status_text += " (Yüz Tespit Edilemedi)"
                 else: # Güvenli durum
                     if face_coords_for_blur: # Güvenli ve yüz tespit edildi (ArcFace sonucu kullanılmıyor)
-                        person_status_text += " (Face Detected)"
+                        person_status_text += " (Yüz Tespit Edildi)"
                     # else: Sadece "Safe" yazar (güvenli ve yüz tespit edilemedi)
                 
                 # Cooldown veya gecikme bilgisini ekle (sadece güvensizse ve takipteyse)
@@ -985,12 +1043,12 @@ class StaySafeApp:
                     if tracker_entry['reported']:
                         remaining_cooldown = int(60 - (current_time - tracker_entry.get('last_report_time', 0)))
                         if remaining_cooldown > 0:
-                             person_status_text += f" (Raporlandi - {remaining_cooldown}s)"
+                             person_status_text += f" (Raporlandı - {remaining_cooldown}s)"
                         # Raporlandı ve cooldown bittiyse ek bir şey yazmaya gerek yok, tekrar raporlanabilir.
                     elif time_elapsed > 1: # Henüz raporlanmadı ve gecikme süresi işliyor
                          person_status_text += f" ({int(time_elapsed)}s)"
 
-                self._draw_person_status(frame, person_box, person_status_text, box_color)
+                frame = self._draw_person_status(frame, person_box, person_status_text, box_color)
                 self._draw_ppe_labels(frame, person_box, has_helmet, has_vest)
 
             # 9. Eski Takipçileri Temizle
